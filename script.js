@@ -1125,10 +1125,11 @@
       b: { work: "desk-b-work", more: ["desk-b-type"], sip: "desk-b-sip", turn: "desk-b-to-a", label: "typing" },
     }
     // The turns, steered by the scroll. Each also comes reversed (name-rev) so he can swing back,
-    // and the layout swaps sides at the frame where the chair back fills the shot.
+    // and the layout swaps sides at the frame where the chair back fills the shot. B to A is the
+    // A to B take played backwards, and its ends are the two rest frames, so nothing is blended.
     const TURNS = {
-      "desk-a-to-b": { from: "a", to: "b", frames: 186, swap: 70 },
-      "desk-b-to-a": { from: "b", to: "a", frames: 153, swap: 61 },
+      "desk-a-to-b": { from: "a", to: "b", frames: 185, swap: 70 },
+      "desk-b-to-a": { from: "b", to: "a", frames: 185, swap: 114 },
     }
     // A turn spans STEER screens of scrolling around its change of section, which falls on the
     // swap frame. He catches up with the scroll within CATCH seconds, at up to SWING times
@@ -1145,11 +1146,9 @@
     // He sips only once the reader has stopped scrolling for a moment, then waits before the next.
     const IDLE_MS = 1800
     const SIP_GAP_MS = [6000, 11000]
-    // The frame of each sip where his hand leaves the keyboard or mouse. A turn before it
-    // dissolves in; after it the sip is hurried back to rest first, so no arm fades out.
-    const SIPS = { "desk-a-sip": 12, "desk-b-sip": 30 }
+    // Every clip at rest is a boomerang: out to a peak and back the same way. A turn that comes
+    // mid-clip jumps to the same picture on the way back and hurries him home at this rate.
     const HURRY = 2
-    const FADE_MS = 250
     // Where his eyeline meets the monitor, as fractions of the source frame.
     const EYELINE = { a: [0.69, 0.44], b: [0.31, 0.4] }
     // Narrow screens crop the frame to JB himself (object-position x, in %).
@@ -1238,8 +1237,7 @@
     }
 
     // A rewound clip's first frame is ready to paint, so it can go on screen before it plays.
-    // With fade, it dissolves in over the clip that was showing.
-    function swapTo(v, fade) {
+    function swapTo(v) {
       const old = Object.values(vids).filter((o) => o !== v && o.classList.contains("is-on"))
       const hide = (o) => {
         if (o === vids[current]) return
@@ -1249,27 +1247,16 @@
       old.forEach((o) => o.classList.remove("is-front"))
       if (!v) return old.forEach(hide)
       v.classList.add("is-on", "is-front")
-      if (fade) {
-        v.style.transition = "none"
-        v.style.opacity = "0"
-        v.getBoundingClientRect()
-        v.style.transition = `opacity ${FADE_MS}ms linear`
-        v.style.opacity = "1"
-        window.setTimeout(() => old.forEach(hide), FADE_MS + 50)
-      } else {
-        v.style.transition = ""
-        v.style.opacity = ""
-        old.forEach(hide)
-      }
+      old.forEach(hide)
     }
 
-    function start(name, fade) {
+    function start(name) {
       const v = vids[name]
       const token = ++starting
       rewind(v).then(() => {
         if (!live || token !== starting) return
         current = name
-        swapTo(v, fade)
+        swapTo(v)
         v.loop = false
         v.playbackRate = 1
         const attempt = v.play()
@@ -1302,14 +1289,14 @@
       if (steer) return // the steering decides when a turn is over
       if (isSip(name)) nextSipAt = performance.now() + SIP_GAP_MS[0] + Math.random() * (SIP_GAP_MS[1] - SIP_GAP_MS[0])
       const w = wanted(station)
-      if (w) return engage(w, false) // back at rest: straight into the turn
+      if (w) return engage(w) // back at rest: straight into the turn
       advance()
     }
 
     // A work clip loops natively until something else is due, then runs out to rest.
     function onTime(name) {
       if (name !== current) return
-      if (isWork(name)) vids[name].loop = chooseNext() === name
+      if (isWork(name)) vids[name].loop = hurrying !== vids[name] && chooseNext() === name
       hud()
     }
 
@@ -1476,7 +1463,7 @@
     }
 
     // Start a turn from rest: forward from its first frame, or reversed from its last.
-    function engage(w, fade) {
+    function engage(w) {
       const name = w.end ? `${w.clip}-rev` : w.clip
       if (!ready(name)) {
         // Not loaded yet: cut across once the reader has moved on to the other side.
@@ -1490,7 +1477,7 @@
       steer = { clip: w.clip, rev: !!w.end, v: vids[name], lo: w.lo, hi: w.hi, rate: 1, seeking: false, locked: false }
       moving = true
       stage.dataset.moving = "true"
-      start(name, fade)
+      start(name)
     }
 
     function arrive(side) {
@@ -1502,7 +1489,7 @@
       const z = zoneAt(window.scrollY)
       anchor = z ? { at: z.at, side, p: z.p } : null
       const w = wanted(side)
-      if (w) return engage(w, false)
+      if (w) return engage(w)
       advance()
     }
 
@@ -1528,7 +1515,7 @@
         s.rev = !s.rev
         s.v = v
         current = name
-        swapTo(v, false)
+        swapTo(v)
         v.playbackRate = Math.max(0.1, s.rate)
         v.play().catch(() => {})
       }, { once: true })
@@ -1545,8 +1532,8 @@
       const c = s.rev ? 1 - f / n : f / n
       setStation(c * n >= t.swap ? t.to : t.from)
       const goal = s.locked ? (s.rev ? 0 : 1) : goalFor(s.clip, c)
-      // Within a couple of frames of rest is rest: the turn's ends are blended onto it.
-      if ((goal === 1 && c * n >= n - 2) || (goal === 0 && c * n <= 2)) return arrive(goal ? t.to : t.from)
+      // The turn's ends are the rest frames themselves, so he arrives only on the last one.
+      if ((goal === 1 && c * n >= n - 0.6) || (goal === 0 && c * n <= 0.6)) return arrive(goal ? t.to : t.from)
       const gap = (goal - c) * n
       if (Math.abs(gap) >= 0.5 && (gap > 0) === s.rev) return reverse(s, f)
       const quiet = performance.now() - lastScroll > 200
@@ -1572,12 +1559,23 @@
       const v = vids[current]
       const w = v && wanted(station)
       if (!w) return
-      // A sip with his hand already moving plays out, hurried; the turn follows from rest.
-      if (isSip(current) && v.currentTime * FPS >= (SIPS[current] || 0)) return hurry(v)
-      engage(w, !(v.currentTime * FPS < 1 || v.ended))
+      if (v.currentTime * FPS < 1 || v.ended) return engage(w)
+      homeward(v) // the turn follows from rest
     }
 
-    // If the reader comes back to this side first, the sip carries on at its own pace.
+    // Mid-clip, he goes home the way he came: on the way out, jump to the same picture on the
+    // way back (the boomerang's mirror frame), then hurry the rest.
+    function homeward(v) {
+      if (v.seeking || hurrying === v) return
+      const n = Math.round(v.duration * FPS)
+      const f = Math.round(v.currentTime * FPS)
+      v.loop = false
+      if (f >= n / 2) return hurry(v)
+      v.addEventListener("seeked", () => hurry(v), { once: true })
+      v.currentTime = (n - f + 0.3) / FPS
+    }
+
+    // If the reader comes back to this side first, the clip carries on at its own pace.
     function hurry(v) {
       if (hurrying === v) return
       hurrying = v
