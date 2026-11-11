@@ -1415,7 +1415,8 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
 .desk-stage {display:none;}
 .js .desk-stage {display:block;position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none;background:var(--color-bg);--cover-l:0;--cover-r:0;--frame-x:50%;--holo-on:0;}
 .js .backdrop::before {display:none;}
-/* A slow camera drift keeps the held frames of the coffee loop alive. */
+/* A slow camera drift keeps the held frames of the coffee loop alive. On wide screens the
+   camera in script.js does the drifting, so the glass on the monitor moves with the frame. */
 .desk-frame {position:absolute;inset:0;filter:saturate(.97) contrast(1.04) brightness(.94);transform-origin:32% 52%;animation:desk-drift 11s ease-in-out infinite alternate;}
 .desk-frame::after {content:"";position:absolute;inset:0;background:radial-gradient(ellipse 90% 84% at 50% 44%,transparent 56%,rgba(4,6,12,.45) 100%),linear-gradient(170deg,rgba(76,58,160,.09),rgba(20,60,110,.06) 60%,rgba(8,10,18,.14));}
 .desk-still,.desk-clip {position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:var(--frame-x) 50%;transition:object-position 1.6s var(--ease-in-out);}
@@ -1463,34 +1464,36 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
 .motion-off .desk-frame,.motion-off .desk-grain,.motion-off .desk-holo *,.motion-off .desk-hud i {animation:none!important;}
 .motion-off .desk-holo .code-cube {transform:rotateX(-18deg) rotateY(-25deg) rotateZ(8deg);}
 
-/* Two-shot layout on wide screens: each section's title is a lower third on JB's side,
-   and its content sits in his eyeline, on the side he is facing. */
-@media (min-width:1100px) {
- .desk-wide .section {padding:14vh clamp(28px,4.5vw,84px) 26vh;}
- .desk-wide .section > .section-container {max-width:none;}
- .desk-wide .section[data-station]:not(.hero):not(.skills) > .section-container,
- .desk-wide .skills[data-station] {display:grid;grid-template-columns:minmax(0,1fr) min(60%,980px);grid-template-rows:repeat(11,auto) 1fr;column-gap:clamp(32px,4vw,72px);align-items:start;}
- /* Short sections still hold the title low for a screen's worth of scrolling: the last row soaks up the height. */
- .desk-wide .section[data-station]:not(.hero):not(.skills) > .section-container {min-height:82vh;}
- .desk-wide .skills[data-station] {min-height:122vh;}
- .desk-wide .section[data-station="b"]:not(.hero):not(.skills) > .section-container,
- .desk-wide .skills[data-station="b"] {grid-template-columns:min(60%,980px) minmax(0,1fr);}
- .desk-wide .section[data-station]:not(.hero):not(.skills) > .section-container > * {grid-column:2;min-width:0;}
- .desk-wide .section[data-station="b"]:not(.hero):not(.skills) > .section-container > * {grid-column:1;}
- .desk-wide .section[data-station]:not(.hero):not(.skills) > .section-container > .section-heading,
- .desk-wide .skills[data-station] > .section-container {grid-column:1;grid-row:1 / -1;align-self:end;position:sticky;bottom:9vh;margin:0;text-shadow:0 2px 18px rgba(0,0,0,.55);}
- .desk-wide .section[data-station="b"]:not(.hero):not(.skills) > .section-container > .section-heading,
- .desk-wide .skills[data-station="b"] > .section-container {grid-column:2;}
- .desk-wide .skills[data-station] > .section-container .section-heading {margin:0;}
- .desk-wide .skills[data-station] > .marquee-group {grid-column:2;grid-row:1;min-width:0;}
- .desk-wide .skills[data-station="b"] > .marquee-group {grid-column:1;}
- .desk-wide .section-heading + *,.desk-wide .skills > .marquee-group,.desk-wide .contact-panel {margin-top:28vh;}
- .desk-wide .section-heading h2 {font-size:clamp(2rem,3.1vw,3.1rem);}
- .desk-wide .heading-split {display:block;}
- .desk-wide .heading-split > p {margin-top:18px;}
- .desk-wide .marquee-label {padding-inline:0;}
+/* The camera (wide screens, html.desk-dive): each section is what is on his monitor. script.js
+   draws the clip frame, the glass (.desk-screen) and the section being read with one projective
+   map each, so the section stays on the screen while the camera flies in and out. --dive is how
+   far in the camera is (0 the room, 1 inside the screen), --glass how far the screen has
+   switched from his editor to the page, --bezel the bezel's width with the glass at full size. */
+.desk-dim,.desk-screen {display:none;}
+.desk-dive .desk-frame {transform-origin:0 0;animation:none;will-change:transform;}
+.desk-dive .desk-scrim::after {opacity:calc(var(--cover-r) * (1 - var(--dive,0)));}
+.desk-dive .desk-hud {opacity:calc(1 - var(--dive,0));}
+.desk-dive .desk-dim {display:block;position:absolute;inset:0;background:radial-gradient(ellipse 75% 75% at 50% 50%,rgba(4,6,12,.3),rgba(4,6,12,.82));opacity:var(--dive,0);}
+.desk-dive .desk-screen {display:block;position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:0 0;opacity:var(--glass,0);will-change:transform,opacity;border-radius:calc(var(--bezel,16px) * .3);
+ background:radial-gradient(ellipse 85% 75% at 50% 40%,transparent 52%,rgba(2,4,9,.5) 100%),radial-gradient(ellipse 60% 50% at 80% 10%,rgba(94,140,255,.11),transparent 70%),radial-gradient(ellipse 50% 45% at 10% 90%,rgba(94,234,212,.07),transparent 70%),linear-gradient(rgba(141,180,255,.03) 1px,transparent 1px) 0 0/100% 56px,linear-gradient(90deg,rgba(141,180,255,.03) 1px,transparent 1px) 0 0/56px 100%,linear-gradient(180deg,#0a0e18,#070a11);
+ box-shadow:0 0 0 var(--bezel,16px) #05070b,0 0 0 calc(var(--bezel,16px) + 1.5px) rgba(150,170,210,.18),0 0 calc(var(--bezel,16px) * 8) rgba(84,140,255,.2);}
+.desk-screen::after {content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px rgba(141,180,255,.12),inset 0 0 180px rgba(40,70,150,.12);}
+/* The room reflected in the glass, from outside. It is gone once the camera is through it. */
+.desk-screen-glare {position:absolute;inset:0;border-radius:inherit;background:linear-gradient(112deg,rgba(255,255,255,.14),rgba(255,255,255,.03) 22%,transparent 40%,transparent 74%,rgba(141,180,255,.07));opacity:calc(1 - var(--dive,0));}
 
- .desk-wide .hero {min-height:100svh;padding-top:calc(var(--nav-height) + 20px);padding-bottom:26vh;}
+@media (min-width:1100px) {
+ /* A section fills the screen it is on. Only the one on the glass is drawn; script.js fades it
+    in with the glass and takes its transform off once the camera is inside. */
+ .desk-dive .section:not(.hero) {min-height:100vh;padding:7vh clamp(28px,4.5vw,84px) 13vh;transform-origin:0 0;}
+ .desk-dive:not(.motion-off) main > .section:not(.hero) {opacity:0;pointer-events:none;}
+ .desk-dive:not(.motion-off) main > .section.is-inside {pointer-events:auto;}
+ /* Room between two sections for the pull-out, his turn and the next dive. With motion off
+    there is no camera, so the sections simply follow one another. */
+ .desk-dive:not(.motion-off) main > .section:nth-child(n+3) {margin-top:var(--dive-gap,100vh);}
+
+ /* The intro stays out in the room: a lower third on JB's side, the 3D workspace in his eyeline. */
+ .desk-wide .hero {min-height:100svh;padding:calc(var(--nav-height) + 20px) clamp(28px,4.5vw,84px) 22vh;}
+ .desk-wide .hero > .section-container {max-width:none;}
  .desk-wide .hero-grid {min-height:calc(100svh - var(--nav-height) - 20px - 7vh);grid-template-columns:minmax(0,1fr) min(60%,980px);column-gap:clamp(32px,4vw,72px);align-items:end;}
  .desk-wide .hero-content {text-shadow:0 2px 18px rgba(0,0,0,.6);}
  .desk-wide .hero h1 {font-size:clamp(2.5rem,3.4vw,3.9rem);}
@@ -1498,11 +1501,7 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
  .desk-wide .hero-visual {align-self:center;}
  .desk-wide .hero-stats,.desk-wide .logo-strip {width:min(60%,980px);margin-left:auto;}
 }
-/* Until about 1500px the eyeline column fits three service cards only narrowly, so they take
-   less side padding and their tags keep to one line. */
-@media (min-width:1100px) and (max-width:1499px) {
- .desk-wide .service-card {padding-inline:clamp(16px,calc(16px + (100vw - 1100px) / 10),20px);}
-}
+@media print {.desk-dive main > .section {opacity:1!important;transform:none!important;clip-path:none!important;margin-top:0!important;min-height:0!important;}}
 
 /* Narrow screens: the stage stays behind the content, cropped to JB, under one even scrim. */
 @media (max-width:1099px) {

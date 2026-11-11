@@ -129,7 +129,7 @@
 
     <link
       rel="stylesheet"
-      href="styles.css?v=20261102"
+      href="styles.css?v=20261111"
     />
 
     <!-- Scripting enables reveals and the optional game. Motion starts on;
@@ -150,13 +150,16 @@
  <div class="scroll-progress" aria-hidden="true"><span></span></div>
  <div class="backdrop" aria-hidden="true"></div>
  <!-- The desk: JB filmed from two sides. script.js adds the clips and turns him to the
-      other monitor whenever the section under the reading line changes. -->
+      other monitor whenever the section under the reading line changes. On wide screens
+      desk-screen is the glass of his monitor: the camera dives into it for each section. -->
  <div class="desk-stage" id="desk-stage" data-station="a" aria-hidden="true">
   <div class="desk-frame" id="desk-frame">
    <img class="desk-still" data-still="a" src="img/desk/desk-a.webp" width="1280" height="720" alt="" decoding="async" fetchpriority="high">
    <img class="desk-still" data-still="b" src="img/desk/desk-b.webp" width="1280" height="720" alt="" decoding="async">
   </div>
   <div class="desk-scrim"></div>
+  <div class="desk-dim"></div>
+  <div class="desk-screen" id="desk-screen"><i class="desk-screen-glare"></i></div>
   <div class="desk-holo" id="desk-holo"></div>
   <div class="desk-grain"></div>
   <p class="desk-hud"><i></i><span id="desk-hud-state">reviewing</span><b id="desk-hud-scene">Intro</b></p>
@@ -611,6 +614,6 @@
 
  <dialog class="lightbox" id="lightbox" aria-label="ROOC dashboard screenshot"><img class="lightbox-image" id="lightbox-image" alt=""><button class="lightbox-close" id="lightbox-close" type="button" aria-label="Close screenshot">&times;</button></dialog>
  <footer class="footer"><div class="section-container footer-container"><p>&copy; <span id="year">2026</span> John Berlyn Isip</p><a href="#hero">Back to top ↑</a></div></footer>
- <script src="script.js?v=20261102"></script>
+ <script src="script.js?v=20261111"></script>
  </body>
 </html>
