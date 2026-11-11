@@ -992,12 +992,7 @@
     if (held || glide || !motionOn() || performance.now() - glideEnded < MAGNET_QUIET * 2) return
     const y = window.scrollY
     const vh = window.innerHeight
-    // On wide screens a stop part way into or out of the monitor finishes the move instead.
-    const snap = desk ? desk.snap(y, glideDir) : undefined
-    if (snap !== undefined) {
-      if (snap !== null && Math.abs(snap - y) >= 2) glideTo(snap, 260 + Math.sqrt(Math.abs(snap - y)) * 12)
-      return
-    }
+    if (desk && desk.owns()) return // the desk camera keeps the page inside the section on screen
     let best = null
     sections.forEach((section) => {
       const to = restY(section)
@@ -1051,7 +1046,8 @@
     if (!section) return
     event.preventDefault()
     if (location.hash !== hash) history.pushState(null, "", hash)
-    glideToSection(section)
+    // On wide screens the desk camera flies there; otherwise the page glides.
+    if (!(desk && desk.go(section))) glideToSection(section)
     // Move the keyboard's starting point to the section, as the browser's jump would.
     if (!section.hasAttribute("tabindex")) section.setAttribute("tabindex", "-1")
     section.focus({ preventScroll: true })
@@ -1125,10 +1121,10 @@
   // Every clip starts and ends on its station's rest frame, so any clip can follow any other
   // at a station. tools/desk-clips/ renders them.
   //
-  // On wide screens the sections are what is on his monitors. Scrolling to a section flies the
+  // On wide screens the sections are what is on his monitors. Asking for a section flies the
   // camera into the screen until the glass fills the window and the section is simply the
-  // page; scrolling on pulls back out to the room, he turns, and the camera dives into the
-  // other monitor. See "The camera" below.
+  // page; asking for the next pulls back out to the room, he turns, and the camera dives into
+  // the other monitor. The flight runs on a clock, not on the scroll. See "The camera" below.
   function initDesk(stage) {
     const frameEl = qs("#desk-frame", stage)
     const holo = qs("#desk-holo", stage)
@@ -1187,9 +1183,16 @@
     }
     const SETTLE = 5.5
     const ASPECT = 16 / 9 // the monitors' own shape; the glass covers the window at this shape
-    const DIVE = 0.65 // screens of scrolling to fly into a monitor, and the same to come out
-    const TURN = 0.6 // screens of scrolling, between two dives, that steer him to the other monitor
-    const CAM_RATE = 2.6 // the fastest the camera flies, in whole dives a second
+    // The camera flies on a clock, never on the scroll: a wheel notch, a key or a link only
+    // says where to go, and the flight plays out whole, however long the stride was.
+    const DIVE_IN = 1.15 // seconds to fly into a monitor
+    const DIVE_OUT = 0.85 // seconds to pull back out to the room
+    const TURN_RATE = 4 // how fast he turns to the other monitor while the camera waits
+    const RUSH_GAIN = 0.8 // a reader still scrolling mid-flight speeds it up, by up to this much
+    const SPRING = 13 // how stiffly the page follows the wheel inside a section (a damped spring)
+    const PUSH = 40 // px of wheel past a section's end that ask for the next section
+    const EDGE_HOLD = 320 // ms a section's end resists, so the stride that reached it stops there
+    const LAND_COOL = 320 // ms after landing before the wheel can leave again
     const GLASS = 0.07 // how far into a dive the screen has switched over to the page
     const BEZEL = 0.007 // the bezel's width, as a share of the glass's
     const connection = navigator.connection
@@ -1202,11 +1205,7 @@
       let body = heading ? heading.nextElementSibling : qs(".section-container", section)
       if (section.id === "hero") body = qs(".hero-visual", section)
       if (section.id === "skills") body = qs(".marquee-group", section)
-      // A section that is one block of content holds it still while a short section is read
-      // (see .has-stick in styles.css).
-      const only = section.children.length === 1 && section.firstElementChild.classList.contains("section-container") ? section.firstElementChild : null
-      if (only && section.id !== "hero") section.classList.add("has-stick")
-      return { section, stick: section.id !== "hero" ? only : null, slack: 0, station: "a", body, emblem: EMBLEMS[section.id] || "", label: section.id === "hero" ? "Intro" : (eyebrow ? eyebrow.textContent.trim() : section.id) }
+      return { section, station: "a", top: 0, height: 0, lo: 0, hi: 0, body, emblem: EMBLEMS[section.id] || "", label: section.id === "hero" ? "Intro" : (eyebrow ? eyebrow.textContent.trim() : section.id) }
     })
 
     // The emblems are copies of the 3D objects already on the page.
@@ -1369,9 +1368,11 @@
         frameEl.appendChild(v)
         vids[name] = v
       })
-      names.reduce((chain, name) => chain.then(() => fetchClip(vids[name])), Promise.resolve())
+      // He goes live as soon as the work clip for the monitor he should be at has arrived,
+      // which may not be the first one if the page opened part way down.
+      const go = () => { if (!live && motionOn() && !document.hidden) goLive() }
+      names.reduce((chain, name) => chain.then(() => fetchClip(vids[name])).then(go), Promise.resolve())
       const first = vids[CLIPS[station].work]
-      const go = () => { if (motionOn() && !document.hidden) goLive() }
       if (first.readyState >= 3) go()
       else first.addEventListener("canplay", go, { once: true })
     }
@@ -1434,24 +1435,9 @@
     function zones() {
       const now = performance.now()
       if (geo && now - geoAt < 1000) return geo
-      if (cam.on && !cam.lay) layout(now) // measures the sections, and drops the old zones
       geo = []
       geoAt = now
-      if (cam.on) {
-        // Wide: he turns in the stretch of scrolling between one section's pull-out and the
-        // next one's dive, while the camera is out in the room.
-        for (let k = 1; k + 1 < scenes.length; k++) {
-          const above = scenes[k].station
-          const below = scenes[k + 1].station
-          const clip = CLIPS[above].turn
-          const t = TURNS[clip]
-          const len = scenes[k + 1].in0 - scenes[k].out1
-          if (!t || above === below || len < 8) continue
-          const sw = t.swap / (t.frames - 1)
-          geo.push({ clip, above, below, sw, at: scenes[k].out1 + sw * len, start: scenes[k].out1, len })
-        }
-        return geo
-      }
+      if (cam.fly) return geo // the camera decides where he sits, not the scroll
       const vh = window.innerHeight
       const y0 = window.scrollY
       const rects = scenes.map((scene) => scene.section.getBoundingClientRect())
@@ -1476,6 +1462,7 @@
 
     // The side of the section at the reading line.
     function sideAt(y) {
+      if (cam.fly) return cam.dest.station
       let side = scenes[0].station
       zones().forEach((z) => { if (y >= z.at) side = z.below })
       return side
@@ -1495,8 +1482,7 @@
     }
 
     function goalFor(clip, c) {
-      // A glide passes through other sections' turns: he goes straight to where it ends.
-      if (cam.on && glide) return sideAt(glide.to) === TURNS[clip].to ? 1 : 0
+      if (cam.fly) return cam.dest.station === TURNS[clip].to ? 1 : 0
       const y = window.scrollY
       const z = zoneAt(y)
       if (z && z.clip === clip) return goalIn(z, c)
@@ -1508,9 +1494,9 @@
     // scrolled ENGAGE frames' worth past where he settled (the anchor), toward the other side.
     function wanted(side) {
       if (!live) return null
-      if (cam.on) {
+      if (cam.fly) {
         if (cam.c > 0.01) return null // the camera is in his screen: he stays where he is
-        if (glide) return sideAt(glide.to) !== side ? { clip: CLIPS[side].turn, end: 0, lo: 0, hi: 1 } : null
+        return cam.dest.station !== side ? { clip: CLIPS[side].turn, end: 0, lo: 0, hi: 1 } : null
       }
       const y = window.scrollY
       const z = zoneAt(y)
@@ -1603,9 +1589,8 @@
       const gap = (goal - c) * n
       if (Math.abs(gap) >= 0.5 && (gap > 0) === s.rev) return reverse(s, f)
       const quiet = performance.now() - lastScroll > 200
-      // With the camera, a reader already at the next section is waiting on him: he swings.
-      const waited = cam.on && (!!glide || !!sceneAt(window.scrollY, false))
-      const rate = waited ? SWING : quiet && (goal === 0 || goal === 1) ? GLIDE : Math.min(SWING, Math.abs(gap) / FPS / CATCH)
+      // With the camera, the reader is waiting on him: he swings across at a steady clip.
+      const rate = cam.fly ? TURN_RATE * (1 + 0.3 * cam.rush) : quiet && (goal === 0 || goal === 1) ? GLIDE : Math.min(SWING, Math.abs(gap) / FPS / CATCH)
       s.rate += (rate - s.rate) * 0.25
       if (s.rate < 0.07 || Math.abs(gap) < 0.5) {
         if (!v.paused) v.pause()
@@ -1634,6 +1619,12 @@
           if (holding) return
           if (v.currentTime * FPS < 1 || v.ended) {
             v.pause()
+            holding = true
+          } else if (cam.c > 0.97 && !v.seeking && hurrying !== v) {
+            // The glass still fills the window: nobody can see him, so he is simply at rest.
+            v.pause()
+            v.currentTime = 0
+            if (isSip(current)) nextSipAt = performance.now() + SIP_GAP_MS[0]
             holding = true
           } else homeward(v)
           return
@@ -1667,7 +1658,7 @@
       hurrying = v
       const tick = () => {
         if (live && vids[current] === v && !steer && (cam.leaving || wanted(station))) {
-          const rate = cam.on ? Math.max(paced(HURRY), RUSH.max) : paced(HURRY)
+          const rate = cam.fly ? Math.max(paced(HURRY), RUSH.max) : paced(HURRY)
           if (Math.abs(v.playbackRate - rate) > 0.05) v.playbackRate = rate
           return window.requestAnimationFrame(tick)
         }
@@ -1682,11 +1673,61 @@
     // section on it are drawn with one projective map each, all taken from where the screen's
     // four corners are right now, so the section stays on the monitor the whole way: nothing
     // is cut or cross-faded. At 1 the map is the identity and the section is the page itself.
+    //
+    // The camera flies on a clock. The reader only says where to go: a wheel notch or a key at
+    // the end of a section asks for the next one, a link asks for its own. The flight then
+    // plays out whole (out of the screen, his turn, into the other one) at its own pace, a
+    // little faster if they keep scrolling. So a long wheel stride moves it exactly as far as
+    // a short one, and no part of it is ever skipped.
     let touched = false // the reader has scrolled by hand since the page opened
     ;["wheel", "touchstart", "keydown", "mousedown"].forEach((type) => {
       window.addEventListener(type, () => { touched = true }, { once: true, passive: true })
     })
-    const cam = { on: false, running: false, aligned: false, leaving: false, c: 0, shown: null, inside: null, at: 0, lay: 0, gap: -1, d: 1, pad: 0, snap: false, place: null, last: {} }
+    const cam = {
+      on: false, // wide: the sections are what is on his monitors
+      fly: false, // ...and the camera flies between them (motion on, a mouse or a trackpad)
+      running: false,
+      aligned: false,
+      rest: true, // landed: in the room with the intro, or inside the section being read
+      leaving: false, // pulling out toward a turn
+      p: 0, // how far through the dive, on the clock
+      v: 0, // and how fast, in dives a second
+      c: 0, // p eased: slow off the mark, fast through the middle, soft at the glass
+      shown: null, // the section on the glass
+      inside: null,
+      dest: scenes[0], // where the reader asked to go
+      from: scenes[0], // and where they asked from
+      home: scenes[0], // where they last landed
+      held: scenes[0], // the section whose stretch of the page the scroll is kept in
+      entry: "top",
+      rush: 0,
+      hero: 1,
+      bars: 0,
+      sweep: 0,
+      at: 0,
+      lay: 0,
+      landed: 0,
+      lock: 0,
+      ring: -1e9,
+      ringDir: 1,
+      quad: null,
+      vp: [0, 0],
+      last: {},
+    }
+    // The page's own scroll. Inside a section the wheel moves `goal` and the page eases after
+    // it; it never leaves the section on the glass until the glass is empty.
+    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, set: window.scrollY, own: window.scrollY, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
+    const hudEl = qs("#scene-hud")
+    const captionEl = qs("#scene-caption")
+    const nextEl = qs("#scene-next-label")
+    const railEl = qs("#scene-rail")
+    const fxEl = qs("#desk-fx", stage)
+    const fx = fxEl && fxEl.getContext ? fxEl.getContext("2d") : null
+    const mono = getComputedStyle(root).getPropertyValue("--font-mono").trim() || "monospace"
+    const TINTS = ["rgb(196,218,255)", "rgb(196,218,255)", "rgb(94,234,212)", "rgb(141,180,255)"]
+    const streaks = Array.from({ length: 170 }, (_, i) => ({ a: Math.random() * Math.PI * 2, r: Math.random(), l: 0.05 + Math.random() * 0.12, s: 0.5 + Math.random(), w: 0.6 + Math.random() * 1.3, tint: TINTS[i % TINTS.length] }))
+    let fxOn = false
+    const railItems = []
     const lerp = (a, b, t) => a + (b - a) * t
     const smooth = (t) => {
       const x = clamp(t, 0, 1)
@@ -1743,51 +1784,42 @@
       })
     }
 
-    // Where each section's dive starts (in0), where the reader is inside it (in1 to out0) and
-    // where the pull-out ends (out1), as scroll positions. The gap between two sections is
-    // sized so a pull-out, a turn and a dive fit between them.
+    // Each section's stretch of the page: from its top at the top of the window (lo) to its
+    // end at the bottom (hi). A section that fits the window has no stretch at all. The page
+    // ends inside the last one, footer and all.
     function layout(now) {
       cam.lay = now
       geo = null
       const h = stage.clientHeight
-      cam.pad = parseFloat(getComputedStyle(root).scrollPaddingTop) || 0
-      cam.d = DIVE * h
-      const gap = Math.round((TURN + 2 * DIVE - 1) * h + cam.pad)
-      if (gap !== cam.gap) {
-        cam.gap = gap
-        root.style.setProperty("--dive-gap", `${gap}px`)
-      }
+      const end = document.documentElement.scrollHeight - h
+      const was = cam.held.top
       scenes.forEach((scene, index) => {
         scene.top = scene.section.offsetTop
         scene.height = scene.section.offsetHeight
-        if (scene.stick) {
-          const box = getComputedStyle(scene.section)
-          scene.slack = Math.max(0, scene.height - parseFloat(box.paddingTop) - parseFloat(box.paddingBottom) - scene.stick.offsetHeight)
-        }
-        scene.in1 = scene.top - cam.pad
-        scene.in0 = scene.in1 - cam.d
-        // The last section is never left: the page ends inside it.
-        scene.out0 = index === scenes.length - 1 ? Infinity : Math.max(scene.in1, scene.top + scene.height - h)
-        scene.out1 = scene.out0 + cam.d
+        scene.lo = index ? scene.top : 0
+        scene.hi = Math.max(scene.lo, index === scenes.length - 1 ? end : scene.top + scene.height - h)
       })
-    }
-
-    // The section whose dive, read or pull-out the scroll is in, if any.
-    function sceneAt(y, edges) {
-      for (let i = 1; i < scenes.length; i++) {
-        const scene = scenes[i]
-        if (edges ? y >= scene.in0 && y <= scene.out1 : y > scene.in0 && y < scene.out1) return scene
+      // Something above the reader changed height (a late image, a resize): keep their place.
+      const moved = cam.held.top - was
+      if (cam.fly && Math.abs(moved) > 0.5) {
+        sc.pos += moved
+        sc.goal += moved
+        scrollNow(sc.pos)
       }
-      return null
     }
 
-    // The section the reader has reached, for the label and to keep their place.
-    function here(y, diving) {
+    // The section a scroll position belongs to: the one under a line 40% down the window.
+    function sceneAtY(y) {
+      const line = y + 0.4 * stage.clientHeight
       let at = scenes[0]
-      for (let i = 1; i < scenes.length; i++) {
-        if (y >= scenes[i].in1 - (diving ? cam.d : 0.3 * stage.clientHeight)) at = scenes[i]
-      }
+      scenes.forEach((scene, index) => { if (index && line >= scene.top) at = scene })
       return at
+    }
+
+    function scrollNow(y) {
+      window.scrollTo({ top: y, behavior: "instant" })
+      sc.set = y
+      sc.own = window.scrollY
     }
 
     // How far a clip at station A has eased off the rest frame: 0 at its ends, 1 in between.
@@ -1805,9 +1837,8 @@
       style.clipPath = ""
       style.opacity = ""
       style.willChange = ""
-      style.removeProperty("--stick")
       scene.section.classList.remove("is-shown", "is-inside")
-      ;["s:transform", "s:clip", "s:opacity", "s:will", "s:stick"].forEach((key) => { delete cam.last[key] })
+      ;["s:transform", "s:clip", "s:opacity", "s:will"].forEach((key) => { delete cam.last[key] })
     }
 
     // Only one section is on the glass at a time, and it changes only while the glass is dark.
@@ -1818,6 +1849,191 @@
       if (scene) scene.section.classList.add("is-shown")
     }
 
+    // Where the page sits when a section is come into: its top, its end (coming back up from
+    // the section below), or a place inside it.
+    function entryY(scene) {
+      if (cam.entry === "bottom") return scene.hi
+      if (typeof cam.entry === "number") return clamp(cam.entry, scene.lo, scene.hi)
+      return scene.lo
+    }
+
+    // Move the page to a section. Called only with nothing on the glass, so it is not seen.
+    function hold(scene) {
+      cam.held = scene
+      sc.pos = sc.goal = entryY(scene)
+      sc.vel = 0
+      scrollNow(sc.pos)
+    }
+
+    // Be at a section at once, with no flight: the page opened part way down, a deep link,
+    // or motion switched on.
+    function enter(scene) {
+      if (cam.shown) show(null)
+      const intro = scene === scenes[0]
+      cam.dest = cam.from = cam.home = cam.held = scene
+      cam.rest = true
+      cam.leaving = false
+      cam.landed = performance.now()
+      cam.rush = 0
+      cam.v = 0
+      cam.p = cam.c = intro ? 0 : 1
+      cam.hero = intro ? 1 : 0
+      target = scene.station
+      // Behind the glass he can simply be at the right monitor.
+      if (!live || (!intro && !steer && station !== target)) {
+        setStation(target)
+        if (live) advance()
+      }
+      if (!intro) show(scene)
+      sc.pos = sc.goal = clamp(window.scrollY, scene.lo, scene.hi)
+      sc.vel = 0
+      sc.push = sc.back = 0
+      scrollNow(sc.pos)
+      active = scene
+      hudScene.textContent = scene.label
+    }
+
+    // Ask the camera to go to a section. False when it is not flying, so the caller scrolls
+    // the page the ordinary way.
+    function go(scene, entry) {
+      if (!cam.fly || !scene) return false
+      if (scene === cam.dest) {
+        // Already there, or on the way: a link to the section being read goes to its top.
+        cam.entry = entry === undefined ? "top" : entry
+        if (cam.rest) sc.goal = entryY(scene)
+        return true
+      }
+      cam.from = cam.dest
+      cam.dest = scene
+      cam.entry = entry === undefined ? "top" : entry
+      cam.rest = false
+      target = scene.station
+      sc.push = sc.back = 0
+      active = scene
+      hudScene.textContent = scene.label
+      return true
+    }
+
+    function land(now) {
+      cam.rest = true
+      cam.home = cam.from = cam.dest
+      cam.landed = now
+      cam.rush = 0
+      sc.pos = sc.goal = sc.own = window.scrollY
+      sc.vel = 0
+      sc.edge = now
+      sc.push = sc.back = 0
+      if (cam.dest !== scenes[0]) {
+        cam.sweep ^= 1 // a scan line runs down the glass
+        stage.dataset.land = String(cam.sweep)
+      }
+    }
+
+    // The wheel and the scroll keys. Inside a section they move the page, up to its end; a
+    // stride that reaches the end stops there, and the next one asks for the next section.
+    // Mid-flight they only hurry the camera along, or, the other way, send it back.
+    function feed(dy, key) {
+      const now = performance.now()
+      const sign = dy > 0 ? 1 : -1
+      lastScroll = now
+      if (!cam.rest) {
+        const way = Math.sign(scenes.indexOf(cam.dest) - scenes.indexOf(cam.from))
+        if (sign === way || !way) {
+          cam.rush = Math.min(1, cam.rush + Math.abs(dy) / 700)
+          sc.back = 0
+          return
+        }
+        sc.back += Math.abs(dy)
+        if (key || sc.back >= 120) go(cam.from, way > 0 ? "bottom" : "top")
+        return
+      }
+      const scene = cam.home
+      const edge = sign > 0 ? scene.hi : scene.lo
+      if ((edge - sc.goal) * sign > 0.5) {
+        const to = clamp(sc.goal + dy, scene.lo, scene.hi)
+        // A trackpad sends a stream of small moves that is already smooth: the page tracks
+        // it directly. A wheel notch is one big move, and the spring spreads it out.
+        if (!key && Math.abs(dy) < 30) sc.pos += to - sc.goal
+        sc.goal = to
+        sc.push = 0
+        if (sc.goal === edge) sc.edge = now
+        return
+      }
+      const next = scenes[scenes.indexOf(scene) + sign]
+      if (!next || now - cam.landed < LAND_COOL || now - sc.edge < EDGE_HOLD) return
+      if (sign !== sc.pushDir || now - sc.pushAt > 500) sc.push = 0
+      sc.pushDir = sign
+      sc.pushAt = now
+      sc.push += Math.abs(dy)
+      if (key || sc.push >= PUSH) go(next, sign > 0 ? "top" : "bottom")
+    }
+
+    // Something inside the page that scrolls on its own keeps its wheel.
+    function nested(el, dy) {
+      for (let node = el; node && node !== document.body && node !== root; node = node.parentElement) {
+        if (node.scrollHeight - node.clientHeight < 2) continue
+        const flow = getComputedStyle(node).overflowY
+        if (flow !== "auto" && flow !== "scroll") continue
+        if (dy > 0 ? node.scrollTop + node.clientHeight < node.scrollHeight - 1 : node.scrollTop > 0) return true
+      }
+      return false
+    }
+
+    function onWheel(event) {
+      if (!cam.fly || event.ctrlKey || event.defaultPrevented) return
+      const dy = event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? stage.clientHeight * 0.9 : 1)
+      if (!dy || Math.abs(event.deltaX) > Math.abs(dy)) return
+      if (event.target instanceof Element && nested(event.target, dy)) return
+      event.preventDefault()
+      if (!qs("dialog[open]")) feed(dy, false)
+    }
+
+    function onKey(event) {
+      if (!cam.fly || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return
+      const el = event.target instanceof Element ? event.target : null
+      if ((el && el.closest("input,textarea,select,[contenteditable],dialog")) || qs("dialog[open]")) return
+      const page = 0.86 * stage.clientHeight
+      let dy = 0
+      if (event.key === "ArrowDown") dy = 90
+      else if (event.key === "ArrowUp") dy = -90
+      else if (event.key === "PageDown") dy = page
+      else if (event.key === "PageUp") dy = -page
+      else if (event.key === " ") {
+        if (el && el.closest("button,a,summary,[role=button]")) return
+        dy = event.shiftKey ? -page : page
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault()
+        if (event.key === "Home") go(scenes[0], "top")
+        else go(scenes[scenes.length - 1], "bottom")
+        return
+      } else return
+      event.preventDefault()
+      feed(dy, true)
+    }
+
+    // A scroll the camera did not make: the scrollbar, find in page, focus moving on. Inside
+    // the section on the glass it is the reader's to make. Anywhere else it is a request to
+    // go there, and the page stays put until the camera has come out.
+    function foreign(y) {
+      if (!cam.aligned && !touched) return enter(sceneAtY(y)) // the browser placing the page as it opens
+      const held = cam.held
+      const within = y >= held.lo - 1 && y <= held.hi + 1
+      if (within && (cam.rest || held === cam.dest)) {
+        sc.pos = sc.goal = sc.own = y
+        sc.vel = 0
+        return
+      }
+      const at = within ? held : sceneAtY(y)
+      if (at === held) {
+        if (cam.rest) {
+          sc.pos = sc.goal = clamp(y, held.lo, held.hi)
+          sc.vel = 0
+        }
+      } else if (at !== cam.dest) go(at, y)
+      else cam.entry = y
+      scrollNow(sc.pos)
+    }
+
     function camTick(now) {
       if (!cam.on) {
         cam.running = false
@@ -1825,73 +2041,92 @@
       }
       window.requestAnimationFrame(camTick)
       if (document.hidden) return
+      syncFly()
       if (now - cam.lay > 400) layout(now)
-      const y = window.scrollY
-      const diving = motionOn()
-      if (!cam.aligned && document.readyState === "complete") {
-        // A link to a section: the browser jumped there before the gaps between sections were
-        // sized, so it sits a little off. Put it at the section's start, unless the reader
-        // has already moved.
-        cam.aligned = true
-        layout(now)
-        const linked = diving && !touched && location.hash.length > 1 && scenes.find((scene, i) => i && `#${scene.section.id}` === location.hash)
-        if (linked && Math.abs(y - linked.in1) > 2 && Math.abs(y - linked.in1) < stage.clientHeight) {
-          window.scrollTo({ top: Math.ceil(linked.in1), behavior: "instant" })
-          return
-        }
-      }
-      const at = here(y, diving)
-      cam.place = { scene: at, off: clamp(y - at.top, -cam.pad, Math.max(-cam.pad, at.height - stage.clientHeight)) }
-      if (at !== active) {
-        active = at
-        hudScene.textContent = at.label
-      }
-      if (!diving) {
-        cam.at = now
-        cam.leaving = false
-        return paintFlat(y)
-      }
-      target = sideAt(y)
-      // The stills just switch sides, and only while the camera is out in the room.
-      if (!live && cam.c < 0.01 && station !== target) setStation(target)
-
-      let want = sceneAt(y, false)
-      // A glide across several sections dives only into the one it is going to.
-      if (glide && want !== sceneAt(glide.to, true)) want = null
-      const there = !!want && !moving && station === want.station
-      const reach = want ? (y <= want.in1 ? (y - want.in0) / cam.d : y <= want.out0 ? 1 : 1 - (y - want.out0) / cam.d) : 0
-      if (cam.snap) {
-        // The layout has just changed under the reader (motion switched on): no fly-in.
-        cam.snap = false
-        if (want && there) {
-          show(want)
-          cam.c = clamp(reach, 0, 1)
-        }
-      }
-      if (want !== cam.shown && cam.c < 0.004) show(want)
-      const goal = want && want === cam.shown && there ? clamp(reach, 0, 1) : 0
-
-      // Heading out of a screen toward a section at the other monitor: a turn is coming.
-      const exit = !!want && cam.c > 0.01 && ((y > want.out0 && scrollDir > 0) || (y < want.in1 && scrollDir < 0))
-      const next = exit ? scenes[scenes.indexOf(want) + scrollDir] : null
-      cam.leaving = (!!next && next.station !== want.station) || (!!glide && cam.c > 0.01 && sideAt(glide.to) !== station)
-
       // Frames can be far apart (a slow device, a throttled tab): the camera then takes the
-      // bigger step, rather than falling behind the scroll.
+      // bigger step, so the flight still lasts as long as it should.
       const dt = clamp((now - cam.at) / 1000, 0, 0.25)
       cam.at = now
-      const step = clamp((goal - cam.c) * (1 - Math.exp(-dt / 0.085)), -CAM_RATE * dt, CAM_RATE * dt)
-      cam.c = Math.abs(goal - cam.c - step) < 0.0015 ? goal : cam.c + step
-      paint(now, y)
+      if (!cam.fly) return paintFlat(window.scrollY)
+      if (!cam.aligned && document.readyState === "complete") {
+        // The page has settled (fonts, images, a link to a section): start from where it is.
+        cam.aligned = true
+        if (!touched) {
+          layout(now)
+          enter(sceneAtY(window.scrollY))
+        }
+      }
+      const intro = scenes[0]
+      const want = cam.dest === intro ? null : cam.dest
+      // The stills just switch sides, and only while the camera is out in the room.
+      if (!live && cam.c < 0.01 && station !== target) setStation(target)
+      const there = !moving && station === cam.dest.station
+
+      // What is on the glass changes only with the camera out in the room, and the page moves
+      // to the new section in the same breath, where it cannot be seen to jump.
+      if (cam.p <= 0) {
+        if (cam.shown && cam.shown !== want) show(null)
+        if (!cam.shown) {
+          if (!want) {
+            if (cam.held !== intro) hold(intro)
+          } else if (there && cam.hero <= 0.01) {
+            show(want)
+            hold(want)
+            cam.lock = now
+          }
+        }
+      }
+      const goal = want && cam.shown === want ? 1 : 0
+      // Heading out of a screen toward the other monitor: he comes back to rest meanwhile.
+      cam.leaving = cam.p > 0 && goal === 0 && cam.dest.station !== station
+      cam.rush *= Math.exp(-dt / 1.4)
+      // The speed eases too, so turning back mid-flight is a swing, not a bounce.
+      const dir = Math.sign(goal - cam.p)
+      const pace = (dir * (1 + RUSH_GAIN * cam.rush)) / (dir > 0 ? DIVE_IN : DIVE_OUT)
+      cam.v += (pace - cam.v) * (1 - Math.exp(-dt / 0.07))
+      const before = cam.c
+      cam.p = clamp(cam.p + cam.v * dt, 0, 1)
+      if (cam.p === goal) cam.v = 0
+      cam.c = cam.p < 0.5 ? 4 * cam.p * cam.p * cam.p : 1 - Math.pow(-2 * cam.p + 2, 3) / 2
+      if ((before < 0.8) !== (cam.c < 0.8)) {
+        cam.ring = now // through the glass
+        cam.ringDir = cam.c > before ? 1 : -1
+      }
+      // The intro is out in the room: it clears before the camera sets off, and comes back
+      // once he is at his first monitor again.
+      const back = !want && !cam.shown && cam.p <= 0 && there
+      cam.hero = clamp(cam.hero + (back ? dt / 0.45 : -dt / 0.26), 0, 1)
+
+      const arrived = want ? cam.shown === want && cam.p >= 1 : back && cam.held === intro
+      if (arrived && !cam.rest) land(now)
+
+      // The page follows the wheel like a damped spring: it sets off gently, never
+      // overshoots, and a long stride lands as softly as a short one.
+      const gap = sc.pos - sc.goal
+      if (gap || sc.vel) {
+        const e = Math.exp(-SPRING * dt)
+        const push = sc.vel + SPRING * gap
+        sc.pos = sc.goal + (gap + push * dt) * e
+        sc.vel = (sc.vel - push * SPRING * dt) * e
+        if (Math.abs(sc.pos - sc.goal) < 0.3 && Math.abs(sc.vel) < 4) {
+          sc.pos = sc.goal
+          sc.vel = 0
+        }
+      }
+      if (sc.pos !== sc.set) scrollNow(sc.pos)
+      paint(now, window.scrollY)
+      drawFx(now, dt, dt > 0 ? (cam.c - before) / dt : 0)
+      chrome(dt)
       hud()
     }
 
     function paint(now, y) {
       const c = cam.c
       const scene = cam.shown
-      const inside = c >= 1 && !!scene && y >= scene.in1 - 0.5 && y <= scene.out0 + 0.5
+      const inside = cam.p >= 1 && !!scene
       if (inside && cam.inside === scene) return // nothing moves while the reader is inside
       cam.inside = inside ? scene : null
+      root.classList.toggle("cam-inside", inside)
 
       const w = stage.clientWidth
       const h = stage.clientHeight
@@ -1937,6 +2172,8 @@
       const square = smooth((c - 0.28) / 0.72)
       const quad = room.map(([x, yy], i) => [lerp(qx + (x - mx) * zoom, full[i][0], square), lerp(qy + (yy - my) * zoom, full[i][1], square)])
       const onto = fromSquare(quad)
+      cam.quad = quad
+      cam.vp = [(quad[0][0] + quad[1][0] + quad[2][0] + quad[3][0]) / 4, (quad[0][1] + quad[1][1] + quad[2][1] + quad[3][1]) / 4]
 
       put("frame", frameEl, "transform", toCss(mul(onto, adj(fromSquare(rest)))))
       putVar("--dive", c.toFixed(3))
@@ -1949,10 +2186,7 @@
       put("w", screenEl, "width", `${cw.toFixed(1)}px`)
       put("h", screenEl, "height", `${ch.toFixed(1)}px`)
       put("pane", screenEl, "transform", toCss(pane))
-      // The intro is out in the room: it falls away as the camera passes it.
-      // It clears over the last stretch of scrolling before the first dive, so the camera sets off from a clear room.
-      const away = scenes[1] ? smooth((y - (scenes[1].in0 - 0.3 * h)) / (0.3 * h)) : 0
-      put("hero", scenes[0].section, "opacity", away > 0 ? (1 - away).toFixed(3) : "")
+      put("hero", scenes[0].section, "opacity", cam.hero >= 0.999 ? "" : cam.hero.toFixed(3))
       if (!scene) return
 
       const el = scene.section
@@ -1965,36 +2199,208 @@
         return
       }
       el.classList.remove("is-inside")
-      // Drawn as if the page were scrolled to `view` within the section (held at its nearest
-      // end while the camera is outside), then put on the glass.
-      const view = clamp(y, scene.in1, scene.out0) - scene.top
+      // Drawn as the page shows it at this scroll position, then put on the glass. The page
+      // does not scroll while the camera flies, so only the map changes from frame to frame.
+      const view = clamp(y, scene.lo, scene.hi) - scene.top
       const ex = el.offsetLeft
-      // Inside, the block is held by position: sticky. Out here it is placed where that
-      // leaves it at `view`, so it does not move when the camera crosses the glass.
-      const held = `${clamp(view + scene.top - scene.in1, 0, scene.slack).toFixed(1)}px`
-      if (cam.last["s:stick"] !== held) {
-        cam.last["s:stick"] = held
-        el.style.setProperty("--stick", held)
-      }
       put("s:will", el, "willChange", "transform")
       put("s:transform", el, "transform", toCss(mul(shift(-ex, y - scene.top), mul(pane, shift(ex - cx, -view - cy)))))
       put("s:clip", el, "clipPath", `inset(${(view + cy).toFixed(1)}px 0 ${(scene.height - view - cy - ch).toFixed(1)}px 0)`)
       put("s:opacity", el, "opacity", glass.toFixed(3))
     }
 
-    // Motion off: no camera. The glass simply comes up over the room as the intro leaves.
+    // What the flight looks like on top of the footage: brackets that lock onto the monitor
+    // he is at, light streaking past as the camera moves, and a ripple as it goes through the
+    // glass. Drawn only while something is moving.
+    function drawFx(now, dt, rate) {
+      if (!fx) return
+      const scene = cam.shown
+      const speed = Math.min(1.2, Math.abs(rate) / 2.4)
+      const aim = scene && scene === cam.dest && cam.c < 0.8 ? 1 - smooth((cam.c - 0.4) / 0.4) : 0
+      const ring = (now - cam.ring) / 620
+      if ((speed < 0.012 && aim < 0.01 && ring >= 1) || !cam.quad) {
+        if (fxOn) {
+          fx.setTransform(1, 0, 0, 1, 0, 0)
+          fx.clearRect(0, 0, fxEl.width, fxEl.height)
+          fxOn = false
+        }
+        return
+      }
+      fxOn = true
+      const w = stage.clientWidth
+      const h = stage.clientHeight
+      const k = Math.min(window.devicePixelRatio || 1, 1.5)
+      if (fxEl.width !== Math.round(w * k) || fxEl.height !== Math.round(h * k)) {
+        fxEl.width = Math.round(w * k)
+        fxEl.height = Math.round(h * k)
+      }
+      fx.setTransform(k, 0, 0, k, 0, 0)
+      fx.clearRect(0, 0, w, h)
+      const quad = cam.quad
+      const [vx, vy] = cam.vp
+      const trace = (pts) => {
+        fx.moveTo(pts[0][0], pts[0][1])
+        for (let i = 1; i < 4; i++) fx.lineTo(pts[i][0], pts[i][1])
+        fx.closePath()
+      }
+
+      if (speed > 0.012) {
+        // Streaks run out from the monitor on the way in, and back toward it on the way out.
+        // They stay off the screen itself, so the page on it is never drawn over.
+        const reach = Math.hypot(Math.max(vx, w - vx), Math.max(vy, h - vy))
+        const way = rate > 0 ? 1 : -1
+        fx.save()
+        fx.beginPath()
+        fx.rect(0, 0, w, h)
+        trace(quad)
+        fx.clip("evenodd")
+        fx.globalCompositeOperation = "lighter"
+        fx.lineCap = "round"
+        streaks.forEach((s) => {
+          s.r += way * speed * s.s * (0.2 + s.r * 1.5) * dt * 1.5
+          if (s.r > 1.1) {
+            s.r = 0.03 + Math.random() * 0.12
+            s.a = Math.random() * Math.PI * 2
+          } else if (s.r < 0.03) {
+            s.r = 0.9 + Math.random() * 0.2
+            s.a = Math.random() * Math.PI * 2
+          }
+          const cos = Math.cos(s.a)
+          const sin = Math.sin(s.a)
+          const r0 = s.r * reach
+          const r1 = (s.r + s.l * speed * (0.25 + s.r)) * reach
+          fx.globalAlpha = Math.min(1, speed * speed) * clamp(s.r * 2.4, 0, 1) * 0.7
+          fx.strokeStyle = s.tint
+          fx.lineWidth = s.w * (0.7 + s.r * 1.4)
+          fx.beginPath()
+          fx.moveTo(vx + cos * r0, vy + sin * r0)
+          fx.lineTo(vx + cos * r1, vy + sin * r1)
+          fx.stroke()
+        })
+        fx.restore()
+      }
+
+      if (ring < 1) {
+        // Through the glass: a ring of light opens out from the screen (or closes back onto
+        // it, coming out).
+        const e = 1 - Math.pow(1 - ring, 3)
+        const r = lerp(0.1, 1.08, cam.ringDir > 0 ? e : 1 - e) * Math.hypot(w, h) / 2
+        const a = Math.sin(Math.PI * Math.min(1, ring * 1.15)) * 0.34
+        fx.save()
+        fx.globalCompositeOperation = "lighter"
+        fx.strokeStyle = "rgb(140,222,255)"
+        fx.globalAlpha = a * 0.3
+        fx.lineWidth = 18
+        fx.beginPath()
+        fx.arc(vx, vy, r, 0, Math.PI * 2)
+        fx.stroke()
+        fx.globalAlpha = a
+        fx.lineWidth = 1.5
+        fx.beginPath()
+        fx.arc(vx, vy, r, 0, Math.PI * 2)
+        fx.stroke()
+        fx.restore()
+      }
+
+      if (aim > 0.01) {
+        // The lock: four brackets close in on the screen's corners, with what is on it.
+        const t = clamp((now - cam.lock) / 420, 0, 1)
+        const e = 1 - Math.pow(1 - t, 3)
+        const spread = 1 + (1 - e) * 0.3
+        const pts = quad.map(([x, yy]) => [vx + (x - vx) * spread, vy + (yy - vy) * spread])
+        const tone = "rgb(94,234,212)"
+        fx.save()
+        fx.lineCap = "square"
+        fx.strokeStyle = tone
+        fx.globalAlpha = aim * e * 0.2
+        fx.lineWidth = 1
+        fx.beginPath()
+        trace(pts)
+        fx.stroke()
+        fx.globalAlpha = aim * e
+        fx.lineWidth = 1.75
+        fx.beginPath()
+        pts.forEach((p, i) => {
+          ;[pts[(i + 1) % 4], pts[(i + 3) % 4]].forEach((q) => {
+            const len = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1
+            const f = Math.min(0.2, 40 / len)
+            fx.moveTo(p[0], p[1])
+            fx.lineTo(p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f)
+          })
+        })
+        fx.stroke()
+        // Its label sits on the room side of the monitor, level with the top corner.
+        const left = vx > w / 2
+        const corner = left ? pts[0] : pts[1]
+        const tx = corner[0] + (left ? -16 : 16)
+        const ty = corner[1] + 4
+        fx.font = `500 10px ${mono}`
+        if ("letterSpacing" in fx) fx.letterSpacing = "1.6px"
+        fx.textAlign = left ? "right" : "left"
+        fx.textBaseline = "top"
+        fx.fillStyle = tone
+        fx.fillText(`${t < 1 ? "ACQUIRING" : "LOCKED"} ▸ ${scene.label.toUpperCase()}`, tx, ty)
+        fx.fillStyle = "rgba(214,226,243,.72)"
+        fx.fillText(`MONITOR ${scene.station.toUpperCase()} · Z ${String(Math.round(cam.c * 100)).padStart(3, "0")}`, tx, ty + 16)
+        fx.restore()
+      }
+    }
+
+    function putHud(name, value) {
+      if (cam.last[`h${name}`] === value) return
+      cam.last[`h${name}`] = value
+      hudEl.style.setProperty(name, value)
+    }
+
+    // The frame around the picture: film bars and a caption while the camera travels, the
+    // marker for the section being read, and the cue at a section's end.
+    function chrome(dt) {
+      if (!hudEl) return
+      const c = cam.c
+      const bars = cam.rest ? 0 : 1 - smooth((c - 0.55) / 0.4)
+      cam.bars += (bars - cam.bars) * (1 - Math.exp(-dt / 0.16))
+      putHud("--bars", cam.bars < 0.003 ? "0" : cam.bars.toFixed(3))
+      putHud("--in", smooth((c - 0.9) / 0.1).toFixed(3))
+      let text = ""
+      if (!cam.rest) {
+        if (cam.shown) text = `${cam.shown === cam.dest ? "Entering" : "Leaving"} ▸ ${cam.shown.label}`
+        else if (moving) text = `Switching to monitor ${cam.dest.station.toUpperCase()}`
+        else text = cam.dest === scenes[0] ? "Back to the room" : `Target ▸ ${cam.dest.label}`
+      }
+      if (text && cam.last.caption !== text) {
+        cam.last.caption = text
+        if (captionEl) captionEl.textContent = text
+      }
+      const index = scenes.indexOf(cam.dest)
+      if (cam.last.rail !== index) {
+        cam.last.rail = index
+        railItems.forEach((item, i) => item.classList.toggle("is-on", i === index))
+      }
+      const next = scenes[scenes.indexOf(cam.home) + 1]
+      const edge = cam.rest && !!next && sc.goal >= cam.home.hi - 1 && sc.goal - sc.pos < 24
+      if (edge && cam.last.next !== next) {
+        cam.last.next = next
+        if (nextEl) nextEl.textContent = next.label
+      }
+      if (cam.last.edge !== edge) {
+        cam.last.edge = edge
+        hudEl.dataset.edge = String(edge)
+      }
+      putVar("--tag", cam.rest && sc.pos <= cam.home.lo + 6 ? "1" : "0") // in flight the caption speaks
+    }
+
+    // No camera (motion off, or a touch screen): the glass simply comes up over the room as
+    // the intro leaves, and the page scrolls as any page does.
     function paintFlat(y) {
-      if (cam.shown) show(null)
-      cam.c = 0
       const w = stage.clientWidth
       const h = stage.clientHeight
       const cw = Math.max(w, h * ASPECT)
       const ch = cw / ASPECT
       const glass = scenes[1] ? clamp((y - (scenes[1].top - h)) / (0.6 * h), 0, 1) : 0
       put("frame", frameEl, "transform", "")
-      put("hero", scenes[0].section, "opacity", "")
       putVar("--dive", glass.toFixed(3))
       putVar("--glass", glass.toFixed(3))
+      putVar("--tag", y > 6 ? "0" : "1")
       putVar("--bezel", `${(cw * BEZEL).toFixed(1)}px`)
       put("w", screenEl, "width", `${cw.toFixed(1)}px`)
       put("h", screenEl, "height", `${ch.toFixed(1)}px`)
@@ -2003,36 +2409,60 @@
 
     function camOff() {
       if (cam.shown) show(null)
-      cam.c = 0
+      cam.c = cam.p = cam.v = 0
       cam.leaving = false
+      cam.rest = true
+      cam.hero = 1
+      cam.bars = 0
+      cam.inside = null
+      cam.quad = null
+      cam.dest = cam.from = cam.home = cam.held = scenes[0]
       cam.last = {}
-      cam.gap = -1
       frameEl.style.transform = ""
       scenes[0].section.style.opacity = ""
-      ;["--dive", "--glass", "--bezel"].forEach((name) => stage.style.removeProperty(name))
-      root.style.removeProperty("--dive-gap")
-    }
-
-    // The gaps between sections exist only while the camera flies, so switching motion on or
-    // off moves everything below the intro. Put the reader back where they were.
-    function keepPlace() {
-      if (!cam.on) return
-      const place = cam.place
-      layout(performance.now())
-      if (place && place.scene !== scenes[0]) window.scrollTo({ top: place.scene.top + place.off, behavior: "instant" })
-      cam.snap = true
-    }
-
-    // Where a stop part way through a dive or a pull-out should finish. Undefined when the
-    // camera is not flying, so the section magnet decides as before.
-    function snap(y, dir) {
-      if (!cam.on || !motionOn()) return undefined
-      for (let i = 1; i < scenes.length; i++) {
-        const scene = scenes[i]
-        if (y > scene.in0 + 1 && y < scene.in1 - 1) return dir > 0 ? Math.ceil(scene.in1) : Math.floor(scene.in0)
-        if (y > scene.out0 + 1 && y < scene.out1 - 1) return dir > 0 ? Math.ceil(scene.out1) : Math.floor(scene.out0)
+      root.classList.remove("cam-inside")
+      ;["--dive", "--glass", "--bezel", "--tag"].forEach((name) => stage.style.removeProperty(name))
+      if (hudEl) {
+        ;["--bars", "--in"].forEach((name) => hudEl.style.removeProperty(name))
+        hudEl.dataset.edge = "false"
       }
-      return null
+      if (fx && fxOn) {
+        fx.setTransform(1, 0, 0, 1, 0, 0)
+        fx.clearRect(0, 0, fxEl.width, fxEl.height)
+        fxOn = false
+      }
+    }
+
+    // The camera flies only with motion on and a pointer that has a wheel. Switching it on
+    // puts the reader inside the section they were reading, with no flight.
+    function syncFly() {
+      const fly = cam.on && motionOn() && finePointer.matches
+      if (fly === cam.fly) return
+      cam.fly = fly
+      root.classList.toggle("desk-scenes", fly)
+      geo = null
+      camOff()
+      if (!fly) return
+      layout(performance.now())
+      enter(sceneAtY(window.scrollY))
+    }
+
+    // The section markers at the right edge: one tick each, and a click goes there.
+    if (railEl) {
+      scenes.forEach((scene) => {
+        const item = document.createElement("li")
+        const button = document.createElement("button")
+        button.type = "button"
+        button.tabIndex = -1
+        button.dataset.label = scene.label
+        button.addEventListener("click", () => {
+          const hash = `#${scene.section.id}`
+          if (go(scene, "top") && location.hash !== hash) history.pushState(null, "", hash)
+        })
+        item.appendChild(button)
+        railEl.appendChild(item)
+        railItems.push(item)
+      })
     }
 
     // Cover math for object-fit: cover, so the emblem lands on the same spot in the frame.
@@ -2054,7 +2484,7 @@
     }
 
     function setScene(scene) {
-      if (cam.on) return // wide: the camera reads the scroll itself
+      if (cam.fly) return // the camera decides what is being read
       active = scene
       target = scene.station
       hudScene.textContent = scene.label
@@ -2095,10 +2525,13 @@
     function hud() {
       const text = !live ? STATES.paused : cam.c > 0.5 ? STATES.inside : moving ? STATES.moving : isSip(current) ? STATES.sip : CLIPS[station].label
       if (hudState.textContent !== text) hudState.textContent = text
+      // Inside a screen the section names itself: the overlay says which monitor this is.
+      const scene = cam.fly && cam.c > 0.5 ? `Monitor ${station.toUpperCase()}` : active.label
+      if (hudScene.textContent !== scene) hudScene.textContent = scene
     }
 
     function setMotion(on) {
-      keepPlace()
+      syncFly()
       if (!on) return stopLive()
       if (!started) return load()
       if (!live) goLive()
@@ -2110,10 +2543,10 @@
       root.classList.toggle("desk-dive", wide)
       if (cam.on !== wide) {
         cam.on = wide
-        if (!wide) camOff()
         assign()
         geo = null
         cam.lay = 0
+        syncFly()
         if (wide && !cam.running) {
           cam.running = true
           cam.at = performance.now()
@@ -2148,7 +2581,19 @@
       if (window.scrollY !== lastY) scrollDir = window.scrollY > lastY ? 1 : -1
       lastY = window.scrollY
       lastScroll = now
+      if (cam.fly && Math.abs(window.scrollY - sc.own) > 1.5) foreign(window.scrollY)
     }, { passive: true })
+    window.addEventListener("wheel", onWheel, { passive: false })
+    window.addEventListener("keydown", onKey)
+    // Focus moving into another section (the Tab key) takes the camera there.
+    document.addEventListener("focusin", (event) => {
+      if (!cam.fly || !(event.target instanceof Element)) return
+      const scene = scenes.find((item) => item.section.contains(event.target))
+      if (scene && scene !== cam.dest) go(scene, pageTop(event.target) - 0.35 * stage.clientHeight)
+    })
+    if (finePointer.addEventListener) finePointer.addEventListener("change", syncFly)
+    // The page changing height (fonts, images, an opened detail) moves the sections.
+    if ("ResizeObserver" in window) new ResizeObserver(() => { cam.lay = 0 }).observe(qs("main") || document.body)
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) Object.values(vids).forEach((v) => v.pause())
       else if (live && vids[current]) vids[current].play().catch(() => stopLive())
@@ -2162,7 +2607,7 @@
     stage.dataset.live = "false"
     assign()
     onWide()
-    return { setMotion, update, snap }
+    return { setMotion, update, go: (section) => go(scenes.find((scene) => scene.section === section), "top"), owns: () => cam.fly }
   }
 
   const deskStage = qs("#desk-stage")
