@@ -1485,7 +1485,13 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
  /* A section fills the screen it is on. Only the one on the glass is drawn; script.js fades it
     in with the glass and takes its transform off once the camera is inside. */
  .desk-dive .section:not(.hero) {min-height:100vh;padding:7vh clamp(28px,4.5vw,84px) 13vh;transform-origin:0 0;}
- .desk-dive:not(.motion-off) main > .section:not(.hero) {opacity:0;pointer-events:none;}
+ .desk-dive:not(.motion-off) main > .section:not(.hero) {opacity:0;pointer-events:none;min-height:130vh;}
+ /* A section shorter than that holds still while the reader scrolls the difference, so a notch
+    or two of the wheel does not throw them back out. Inside, the block sticks; outside,
+    script.js places it where the hold left it (--stick). */
+ .desk-dive:not(.motion-off) main > .section.has-stick {padding-bottom:4vh;}
+ .desk-dive:not(.motion-off) main > .section.has-stick > .section-container {position:relative;top:var(--stick,0px);}
+ .desk-dive:not(.motion-off) main > .section.has-stick.is-inside > .section-container {position:sticky;top:calc(var(--nav-height) + 16px + 7vh);}
  .desk-dive:not(.motion-off) main > .section.is-inside {pointer-events:auto;}
  /* Room between two sections for the pull-out, his turn and the next dive. With motion off
     there is no camera, so the sections simply follow one another. */

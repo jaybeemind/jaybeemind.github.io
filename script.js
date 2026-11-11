@@ -1190,6 +1190,8 @@
     const DIVE = 0.65 // screens of scrolling to fly into a monitor, and the same to come out
     const TURN = 0.6 // screens of scrolling, between two dives, that steer him to the other monitor
     const CAM_RATE = 2.6 // the fastest the camera flies, in whole dives a second
+    const GLASS = 0.07 // how far into a dive the screen has switched over to the page
+    const BEZEL = 0.007 // the bezel's width, as a share of the glass's
     const connection = navigator.connection
     const lowData = !!(connection && (connection.saveData || /(^|-)(2g|3g)$/.test(connection.effectiveType || "")))
 
@@ -1200,7 +1202,11 @@
       let body = heading ? heading.nextElementSibling : qs(".section-container", section)
       if (section.id === "hero") body = qs(".hero-visual", section)
       if (section.id === "skills") body = qs(".marquee-group", section)
-      return { section, station: "a", body, emblem: EMBLEMS[section.id] || "", label: section.id === "hero" ? "Intro" : (eyebrow ? eyebrow.textContent.trim() : section.id) }
+      // A section that is one block of content holds it still while a short section is read
+      // (see .has-stick in styles.css).
+      const only = section.children.length === 1 && section.firstElementChild.classList.contains("section-container") ? section.firstElementChild : null
+      if (only && section.id !== "hero") section.classList.add("has-stick")
+      return { section, stick: section.id !== "hero" ? only : null, slack: 0, station: "a", body, emblem: EMBLEMS[section.id] || "", label: section.id === "hero" ? "Intro" : (eyebrow ? eyebrow.textContent.trim() : section.id) }
     })
 
     // The emblems are copies of the 3D objects already on the page.
@@ -1241,6 +1247,7 @@
     let starting = 0 // the latest clip asked for; an older start that resolves late is dropped
     let nextSipAt = 0
     let hurrying = null // the sip being hurried along so the turn can start
+    let holding = false // waiting on his rest frame for the camera to come out of the screen
     let holoY = 0
     let holoScale = 1
 
@@ -1322,6 +1329,10 @@
       if (isSip(name)) nextSipAt = performance.now() + SIP_GAP_MS[0] + Math.random() * (SIP_GAP_MS[1] - SIP_GAP_MS[0])
       const w = wanted(station)
       if (w) return engage(w) // back at rest: straight into the turn
+      if (cam.leaving) {
+        holding = true // the turn follows as soon as the camera is out
+        return
+      }
       advance()
     }
 
@@ -1400,6 +1411,7 @@
       live = false
       steer = null
       moving = false
+      holding = false
       current = ""
       stage.dataset.live = "false"
       stage.dataset.moving = "false"
@@ -1422,12 +1434,12 @@
     function zones() {
       const now = performance.now()
       if (geo && now - geoAt < 1000) return geo
+      if (cam.on && !cam.lay) layout(now) // measures the sections, and drops the old zones
       geo = []
       geoAt = now
       if (cam.on) {
         // Wide: he turns in the stretch of scrolling between one section's pull-out and the
         // next one's dive, while the camera is out in the room.
-        if (!cam.lay) layout(now)
         for (let k = 1; k + 1 < scenes.length; k++) {
           const above = scenes[k].station
           const below = scenes[k + 1].station
@@ -1591,7 +1603,9 @@
       const gap = (goal - c) * n
       if (Math.abs(gap) >= 0.5 && (gap > 0) === s.rev) return reverse(s, f)
       const quiet = performance.now() - lastScroll > 200
-      const rate = quiet && (goal === 0 || goal === 1) ? GLIDE : Math.min(SWING, Math.abs(gap) / FPS / CATCH)
+      // With the camera, a reader already at the next section is waiting on him: he swings.
+      const waited = cam.on && (!!glide || !!sceneAt(window.scrollY, false))
+      const rate = waited ? SWING : quiet && (goal === 0 || goal === 1) ? GLIDE : Math.min(SWING, Math.abs(gap) / FPS / CATCH)
       s.rate += (rate - s.rate) * 0.25
       if (s.rate < 0.07 || Math.abs(gap) < 0.5) {
         if (!v.paused) v.pause()
@@ -1612,7 +1626,25 @@
       if (steer) return steerTurn()
       const v = vids[current]
       const w = v && wanted(station)
-      if (!w) return
+      if (!w) {
+        if (!v) return
+        // The camera is pulling out toward a turn: he comes back to rest meanwhile and holds
+        // there, so the turn can start the moment it is out.
+        if (cam.leaving) {
+          if (holding) return
+          if (v.currentTime * FPS < 1 || v.ended) {
+            v.pause()
+            holding = true
+          } else homeward(v)
+          return
+        }
+        if (holding) {
+          holding = false // the reader went back in: carry on working
+          advance()
+        }
+        return
+      }
+      holding = false
       if (v.currentTime * FPS < 1 || v.ended) return engage(w)
       homeward(v) // the turn follows from rest
     }
@@ -1634,8 +1666,8 @@
       if (hurrying === v) return
       hurrying = v
       const tick = () => {
-        if (live && vids[current] === v && !steer && wanted(station)) {
-          const rate = paced(HURRY)
+        if (live && vids[current] === v && !steer && (cam.leaving || wanted(station))) {
+          const rate = cam.on ? Math.max(paced(HURRY), RUSH.max) : paced(HURRY)
           if (Math.abs(v.playbackRate - rate) > 0.05) v.playbackRate = rate
           return window.requestAnimationFrame(tick)
         }
@@ -1650,7 +1682,11 @@
     // section on it are drawn with one projective map each, all taken from where the screen's
     // four corners are right now, so the section stays on the monitor the whole way: nothing
     // is cut or cross-faded. At 1 the map is the identity and the section is the page itself.
-    const cam = { on: false, running: false, c: 0, shown: null, inside: null, at: 0, lay: 0, gap: -1, d: 1, pad: 0, snap: false, place: null, last: {} }
+    let touched = false // the reader has scrolled by hand since the page opened
+    ;["wheel", "touchstart", "keydown", "mousedown"].forEach((type) => {
+      window.addEventListener(type, () => { touched = true }, { once: true, passive: true })
+    })
+    const cam = { on: false, running: false, aligned: false, leaving: false, c: 0, shown: null, inside: null, at: 0, lay: 0, gap: -1, d: 1, pad: 0, snap: false, place: null, last: {} }
     const lerp = (a, b, t) => a + (b - a) * t
     const smooth = (t) => {
       const x = clamp(t, 0, 1)
@@ -1724,6 +1760,10 @@
       scenes.forEach((scene, index) => {
         scene.top = scene.section.offsetTop
         scene.height = scene.section.offsetHeight
+        if (scene.stick) {
+          const box = getComputedStyle(scene.section)
+          scene.slack = Math.max(0, scene.height - parseFloat(box.paddingTop) - parseFloat(box.paddingBottom) - scene.stick.offsetHeight)
+        }
         scene.in1 = scene.top - cam.pad
         scene.in0 = scene.in1 - cam.d
         // The last section is never left: the page ends inside it.
@@ -1765,8 +1805,9 @@
       style.clipPath = ""
       style.opacity = ""
       style.willChange = ""
+      style.removeProperty("--stick")
       scene.section.classList.remove("is-shown", "is-inside")
-      ;["s:transform", "s:clip", "s:opacity", "s:will"].forEach((key) => { delete cam.last[key] })
+      ;["s:transform", "s:clip", "s:opacity", "s:will", "s:stick"].forEach((key) => { delete cam.last[key] })
     }
 
     // Only one section is on the glass at a time, and it changes only while the glass is dark.
@@ -1787,6 +1828,18 @@
       if (now - cam.lay > 400) layout(now)
       const y = window.scrollY
       const diving = motionOn()
+      if (!cam.aligned && document.readyState === "complete") {
+        // A link to a section: the browser jumped there before the gaps between sections were
+        // sized, so it sits a little off. Put it at the section's start, unless the reader
+        // has already moved.
+        cam.aligned = true
+        layout(now)
+        const linked = diving && !touched && location.hash.length > 1 && scenes.find((scene, i) => i && `#${scene.section.id}` === location.hash)
+        if (linked && Math.abs(y - linked.in1) > 2 && Math.abs(y - linked.in1) < stage.clientHeight) {
+          window.scrollTo({ top: Math.ceil(linked.in1), behavior: "instant" })
+          return
+        }
+      }
       const at = here(y, diving)
       cam.place = { scene: at, off: clamp(y - at.top, -cam.pad, Math.max(-cam.pad, at.height - stage.clientHeight)) }
       if (at !== active) {
@@ -1795,6 +1848,7 @@
       }
       if (!diving) {
         cam.at = now
+        cam.leaving = false
         return paintFlat(y)
       }
       target = sideAt(y)
@@ -1816,6 +1870,11 @@
       }
       if (want !== cam.shown && cam.c < 0.004) show(want)
       const goal = want && want === cam.shown && there ? clamp(reach, 0, 1) : 0
+
+      // Heading out of a screen toward a section at the other monitor: a turn is coming.
+      const exit = !!want && cam.c > 0.01 && ((y > want.out0 && scrollDir > 0) || (y < want.in1 && scrollDir < 0))
+      const next = exit ? scenes[scenes.indexOf(want) + scrollDir] : null
+      cam.leaving = (!!next && next.station !== want.station) || (!!glide && cam.c > 0.01 && sideAt(glide.to) !== station)
 
       const dt = clamp((now - cam.at) / 1000, 0, 0.05)
       cam.at = now
@@ -1879,10 +1938,11 @@
 
       put("frame", frameEl, "transform", toCss(mul(onto, adj(fromSquare(rest)))))
       putVar("--dive", c.toFixed(3))
-      // The screen switches from his editor to the page as the camera sets off.
-      const glass = smooth(c / 0.14)
+      // The screen switches from his editor to the page as the camera sets off: quickly, like
+      // a change of window, so the two are never read on top of each other.
+      const glass = smooth(c / GLASS)
       putVar("--glass", glass.toFixed(3))
-      putVar("--bezel", `${(cw * 0.011).toFixed(1)}px`)
+      putVar("--bezel", `${(cw * BEZEL).toFixed(1)}px`)
       const pane = mul(onto, [1 / cw, 0, 0, 0, 1 / ch, 0, 0, 0, 1])
       put("w", screenEl, "width", `${cw.toFixed(1)}px`)
       put("h", screenEl, "height", `${ch.toFixed(1)}px`)
@@ -1907,6 +1967,13 @@
       // end while the camera is outside), then put on the glass.
       const view = clamp(y, scene.in1, scene.out0) - scene.top
       const ex = el.offsetLeft
+      // Inside, the block is held by position: sticky. Out here it is placed where that
+      // leaves it at `view`, so it does not move when the camera crosses the glass.
+      const held = `${clamp(view + scene.top - scene.in1, 0, scene.slack).toFixed(1)}px`
+      if (cam.last["s:stick"] !== held) {
+        cam.last["s:stick"] = held
+        el.style.setProperty("--stick", held)
+      }
       put("s:will", el, "willChange", "transform")
       put("s:transform", el, "transform", toCss(mul(shift(-ex, y - scene.top), mul(pane, shift(ex - cx, -view - cy)))))
       put("s:clip", el, "clipPath", `inset(${(view + cy).toFixed(1)}px 0 ${(scene.height - view - cy - ch).toFixed(1)}px 0)`)
@@ -1926,7 +1993,7 @@
       put("hero", scenes[0].section, "opacity", "")
       putVar("--dive", glass.toFixed(3))
       putVar("--glass", glass.toFixed(3))
-      putVar("--bezel", `${(cw * 0.011).toFixed(1)}px`)
+      putVar("--bezel", `${(cw * BEZEL).toFixed(1)}px`)
       put("w", screenEl, "width", `${cw.toFixed(1)}px`)
       put("h", screenEl, "height", `${ch.toFixed(1)}px`)
       put("pane", screenEl, "transform", `translate(${((w - cw) / 2).toFixed(1)}px,${((h - ch) / 2).toFixed(1)}px)`)
@@ -1935,6 +2002,7 @@
     function camOff() {
       if (cam.shown) show(null)
       cam.c = 0
+      cam.leaving = false
       cam.last = {}
       cam.gap = -1
       frameEl.style.transform = ""
@@ -1959,8 +2027,8 @@
       if (!cam.on || !motionOn()) return undefined
       for (let i = 1; i < scenes.length; i++) {
         const scene = scenes[i]
-        if (y > scene.in0 + 1 && y < scene.in1 - 1) return Math.round(dir > 0 ? scene.in1 : scene.in0)
-        if (y > scene.out0 + 1 && y < scene.out1 - 1) return Math.round(dir > 0 ? scene.out1 : scene.out0)
+        if (y > scene.in0 + 1 && y < scene.in1 - 1) return dir > 0 ? Math.ceil(scene.in1) : Math.floor(scene.in0)
+        if (y > scene.out0 + 1 && y < scene.out1 - 1) return dir > 0 ? Math.ceil(scene.out1) : Math.floor(scene.out0)
       }
       return null
     }
