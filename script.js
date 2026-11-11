@@ -1685,7 +1685,7 @@
     })
     const cam = {
       on: false, // wide: the sections are what is on his monitors
-      fly: false, // ...and the camera flies between them (motion on, a mouse or a trackpad)
+      fly: false, // ...and the camera flies between them (motion on)
       running: false,
       aligned: false,
       rest: true, // landed: in the room with the intro, or inside the section being read
@@ -1986,6 +1986,80 @@
       if (event.target instanceof Element && nested(event.target, dy)) return
       event.preventDefault()
       if (!qs("dialog[open]")) feed(dy, false)
+    }
+
+    // A finger. Inside a section the page follows it directly and a flick carries on into the
+    // spring. A swipe that reaches the section's end stops there; one that starts at the end
+    // and pulls past it asks for the next section. Mid-flight a swipe hurries the camera, or
+    // the other way sends it back, as the wheel does.
+    const finger = { id: null, y: 0, at: 0, v: 0, total: 0, over: 0, ends: 0, own: false }
+
+    function onTouchStart(event) {
+      finger.id = null
+      if (!cam.fly || event.touches.length !== 1) return // two fingers: a pinch, left alone
+      const t = event.touches[0]
+      const el = event.target instanceof Element ? event.target : null
+      finger.id = t.identifier
+      finger.y = t.clientY
+      finger.at = performance.now()
+      finger.v = finger.total = finger.over = 0
+      // Something that scrolls or reads drags on its own keeps the finger.
+      finger.own = !!qs("dialog[open]") || (!!el && (nested(el, 1) || nested(el, -1) || !!el.closest("input,textarea,select,[contenteditable]")))
+      finger.ends = cam.rest ? (sc.goal >= cam.home.hi - 0.5 ? 1 : 0) + (sc.goal <= cam.home.lo + 0.5 ? 2 : 0) : 0
+      if (cam.rest && !finger.own) {
+        sc.goal = sc.pos // a finger on the page stops it where it is
+        sc.vel = 0
+      }
+    }
+
+    function onTouchMove(event) {
+      if (!cam.fly || finger.id === null) return
+      if (event.touches.length !== 1) {
+        finger.id = null
+        return
+      }
+      const t = event.touches[0]
+      if (t.identifier !== finger.id || finger.own) return
+      if (event.cancelable) event.preventDefault() // the desk moves the page, not the browser
+      const now = performance.now()
+      const dy = finger.y - t.clientY
+      finger.v = finger.v * 0.55 + ((dy / Math.max(4, now - finger.at)) * 1000) * 0.45
+      finger.y = t.clientY
+      finger.at = now
+      finger.total += dy
+      lastScroll = now
+      if (!cam.rest) return
+      const scene = cam.home
+      const to = clamp(sc.goal + dy, scene.lo, scene.hi)
+      finger.over += dy - (to - sc.goal) // what the section's end did not take
+      sc.pos += to - sc.goal
+      sc.goal = to
+      sc.vel = 0
+    }
+
+    function onTouchEnd(event) {
+      if (finger.id === null || Array.from(event.touches).some((t) => t.identifier === finger.id)) return
+      finger.id = null
+      if (!cam.fly || finger.own) return
+      const now = performance.now()
+      if (!cam.rest) {
+        if (Math.abs(finger.total) > 30) feed(finger.total, false)
+        return
+      }
+      const scene = cam.home
+      const sign = finger.over > 0 ? 1 : -1
+      const next = scenes[scenes.indexOf(scene) + sign]
+      const began = sign > 0 ? finger.ends & 1 : finger.ends & 2
+      if (Math.abs(finger.over) > 50 && began && next && now - cam.landed >= LAND_COOL) {
+        go(next, sign > 0 ? "top" : "bottom")
+        return
+      }
+      // A flick: the page keeps the finger's speed and the spring brings it to rest.
+      const v = now - finger.at > 90 ? 0 : finger.v
+      if (Math.abs(v) < 120) return
+      sc.goal = clamp(sc.goal + v * 0.32, scene.lo, scene.hi)
+      sc.vel = v
+      if (sc.goal === (v > 0 ? scene.hi : scene.lo)) sc.edge = now
     }
 
     function onKey(event) {
@@ -2389,7 +2463,7 @@
       putVar("--tag", cam.rest && sc.pos <= cam.home.lo + 6 ? "1" : "0") // in flight the caption speaks
     }
 
-    // No camera (motion off, or a touch screen): the glass simply comes up over the room as
+    // No camera (motion off): the glass simply comes up over the room as
     // the intro leaves, and the page scrolls as any page does.
     function paintFlat(y) {
       const w = stage.clientWidth
@@ -2433,10 +2507,10 @@
       }
     }
 
-    // The camera flies only with motion on and a pointer that has a wheel. Switching it on
+    // The camera flies only with motion on. Switching it on
     // puts the reader inside the section they were reading, with no flight.
     function syncFly() {
-      const fly = cam.on && motionOn() && finePointer.matches
+      const fly = cam.on && motionOn()
       if (fly === cam.fly) return
       cam.fly = fly
       root.classList.toggle("desk-scenes", fly)
@@ -2585,13 +2659,16 @@
     }, { passive: true })
     window.addEventListener("wheel", onWheel, { passive: false })
     window.addEventListener("keydown", onKey)
+    window.addEventListener("touchstart", onTouchStart, { passive: true })
+    window.addEventListener("touchmove", onTouchMove, { passive: false })
+    window.addEventListener("touchend", onTouchEnd, { passive: true })
+    window.addEventListener("touchcancel", onTouchEnd, { passive: true })
     // Focus moving into another section (the Tab key) takes the camera there.
     document.addEventListener("focusin", (event) => {
       if (!cam.fly || !(event.target instanceof Element)) return
       const scene = scenes.find((item) => item.section.contains(event.target))
       if (scene && scene !== cam.dest) go(scene, pageTop(event.target) - 0.35 * stage.clientHeight)
     })
-    if (finePointer.addEventListener) finePointer.addEventListener("change", syncFly)
     // The page changing height (fonts, images, an opened detail) moves the sections.
     if ("ResizeObserver" in window) new ResizeObserver(() => { cam.lay = 0 }).observe(qs("main") || document.body)
     document.addEventListener("visibilitychange", () => {
