@@ -1992,6 +1992,7 @@
     // spring. A swipe that reaches the section's end stops there; one that starts at the end
     // and pulls past it asks for the next section. Mid-flight a swipe hurries the camera, or
     // the other way sends it back, as the wheel does.
+    const touchTrial = /[?&]touch=/.test(location.search)
     const finger = { id: null, y: 0, at: 0, v: 0, total: 0, over: 0, ends: 0, own: false }
 
     function onTouchStart(event) {
@@ -2507,10 +2508,12 @@
       }
     }
 
-    // The camera flies only with motion on. Switching it on
+    // The camera flies only with motion on, and for now only with a mouse or trackpad: on a
+    // real iPad the touch version misbehaved, so it is behind ?touch=1 until it is fixed.
+    // Switching it on
     // puts the reader inside the section they were reading, with no flight.
     function syncFly() {
-      const fly = cam.on && motionOn()
+      const fly = cam.on && motionOn() && (finePointer.matches || touchTrial)
       if (fly === cam.fly) return
       cam.fly = fly
       root.classList.toggle("desk-scenes", fly)
