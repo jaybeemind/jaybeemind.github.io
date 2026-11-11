@@ -1876,7 +1876,9 @@
       const next = exit ? scenes[scenes.indexOf(want) + scrollDir] : null
       cam.leaving = (!!next && next.station !== want.station) || (!!glide && cam.c > 0.01 && sideAt(glide.to) !== station)
 
-      const dt = clamp((now - cam.at) / 1000, 0, 0.05)
+      // Frames can be far apart (a slow device, a throttled tab): the camera then takes the
+      // bigger step, rather than falling behind the scroll.
+      const dt = clamp((now - cam.at) / 1000, 0, 0.25)
       cam.at = now
       const step = clamp((goal - cam.c) * (1 - Math.exp(-dt / 0.085)), -CAM_RATE * dt, CAM_RATE * dt)
       cam.c = Math.abs(goal - cam.c - step) < 0.0015 ? goal : cam.c + step
