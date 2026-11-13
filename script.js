@@ -1612,7 +1612,12 @@
       const v = vids[current]
       const w = v && wanted(station)
       if (!w) {
-        if (!v) return
+        if (!v) {
+          // Nothing on screen: the clip for this monitor had not arrived when he got here.
+          // Start it as soon as it has, or he would sit on the still for good.
+          if (!current && ready(CLIPS[station].work)) advance()
+          return
+        }
         // The camera is pulling out toward a turn: he comes back to rest meanwhile and holds
         // there, so the turn can start the moment it is out.
         if (cam.leaving) {
@@ -1716,7 +1721,7 @@
     }
     // The page's own scroll. Inside a section the wheel moves `goal` and the page eases after
     // it; it never leaves the section on the glass until the glass is empty.
-    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, set: window.scrollY, own: window.scrollY, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
+    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, set: window.scrollY, at: 0, check: 0, tries: 0, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
     const hudEl = qs("#scene-hud")
     const captionEl = qs("#scene-caption")
     const nextEl = qs("#scene-next-label")
@@ -1816,10 +1821,22 @@
       return at
     }
 
-    function scrollNow(y) {
-      window.scrollTo({ top: y, behavior: "instant" })
+    // The desk's own position (sc.pos) is the truth, not what the browser reports back: on
+    // iOS the scroll lives in another process, and a jump made here can be followed by a late
+    // report of where the page was before. Such reports are ignored (see settledScroll), and
+    // a moment after each move the desk checks that the page really is where it was sent.
+    function scrollNow(y, again) {
+      window.scrollTo(0, y)
       sc.set = y
-      sc.own = window.scrollY
+      sc.at = performance.now()
+      sc.tries = again ? sc.tries + 1 : 0
+      sc.check = sc.tries < 4 ? sc.at + 250 : 0
+    }
+
+    // A scroll report counts as the reader's own only once the desk has been quiet for a
+    // moment and no finger is on, or has just left, the glass.
+    function settledScroll(now) {
+      return now - sc.at > 350 && finger.id === null && now - finger.up > 700
     }
 
     // How far a clip at station A has eased off the rest frame: 0 at its ends, 1 in between.
@@ -1919,7 +1936,7 @@
       cam.home = cam.from = cam.dest
       cam.landed = now
       cam.rush = 0
-      sc.pos = sc.goal = sc.own = window.scrollY
+      sc.goal = sc.pos
       sc.vel = 0
       sc.edge = now
       sc.push = sc.back = 0
@@ -1993,7 +2010,15 @@
     // and pulls past it asks for the next section. Mid-flight a swipe hurries the camera, or
     // the other way sends it back, as the wheel does.
     const touchTrial = /[?&]touch=/.test(location.search)
-    const finger = { id: null, y: 0, at: 0, v: 0, total: 0, over: 0, ends: 0, own: false }
+    // ?touch=debug shows what the desk sees, for a device that cannot be inspected.
+    const dbg = { ignored: 0, foreign: 0, resent: 0, moves: 0, blocked: 0, last: "" }
+    let dbgEl = null
+    if (/[?&]touch=debug/.test(location.search)) {
+      dbgEl = document.createElement("pre")
+      dbgEl.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:2000;margin:0;padding:6px 8px;font:11px/1.35 monospace;color:#9ff;background:rgba(0,0,0,.8);pointer-events:none;white-space:pre-wrap;max-width:96vw"
+      document.body.appendChild(dbgEl)
+    }
+    const finger = { id: null, y: 0, at: 0, up: -1e9, v: 0, total: 0, over: 0, ends: 0, own: false }
 
     function onTouchStart(event) {
       finger.id = null
@@ -2021,7 +2046,11 @@
       }
       const t = event.touches[0]
       if (t.identifier !== finger.id || finger.own) return
-      if (event.cancelable) event.preventDefault() // the desk moves the page, not the browser
+      dbg.moves++
+      if (event.cancelable) {
+        event.preventDefault() // the desk moves the page, not the browser
+        dbg.blocked++
+      }
       const now = performance.now()
       const dy = finger.y - t.clientY
       finger.v = finger.v * 0.55 + ((dy / Math.max(4, now - finger.at)) * 1000) * 0.45
@@ -2041,8 +2070,9 @@
     function onTouchEnd(event) {
       if (finger.id === null || Array.from(event.touches).some((t) => t.identifier === finger.id)) return
       finger.id = null
+      finger.up = performance.now()
       if (!cam.fly || finger.own) return
-      const now = performance.now()
+      const now = finger.up
       if (!cam.rest) {
         if (Math.abs(finger.total) > 30) feed(finger.total, false)
         return
@@ -2094,7 +2124,7 @@
       const held = cam.held
       const within = y >= held.lo - 1 && y <= held.hi + 1
       if (within && (cam.rest || held === cam.dest)) {
-        sc.pos = sc.goal = sc.own = y
+        sc.pos = sc.goal = sc.set = y
         sc.vel = 0
         return
       }
@@ -2189,6 +2219,19 @@
         }
       }
       if (sc.pos !== sc.set) scrollNow(sc.pos)
+      else if (sc.check && now >= sc.check) {
+        // The page should have settled where the desk sent it. If a late report left it
+        // somewhere else, send it again (a few times at most, then the reader has it).
+        sc.check = 0
+        if ((cam.aligned || touched) && Math.abs(window.scrollY - sc.pos) > 1.5) {
+          scrollNow(sc.pos, true)
+          dbg.resent++
+        }
+      }
+      if (dbgEl) dbgEl.textContent = `y ${Math.round(window.scrollY)} pos ${Math.round(sc.pos)} goal ${Math.round(sc.goal)} | to ${cam.dest.section.id} on ${cam.shown ? cam.shown.section.id : "-"} p ${cam.p.toFixed(2)} ${cam.rest ? "rest" : "fly"} | st ${station}${moving ? " turning" : ""}${live ? "" : " stills"}
+ignored ${dbg.ignored} foreign ${dbg.foreign} ${dbg.last} resent ${dbg.resent} | finger ${finger.id === null ? "up" : "down"} own ${finger.own} over ${Math.round(finger.over)} v ${Math.round(finger.v)} moves ${dbg.moves} blocked ${dbg.blocked}
+clip ${current || "-"} t ${vids[current] ? vids[current].currentTime.toFixed(2) : "-"}${vids[current] && vids[current].paused ? " paused" : ""}${vids[current] && vids[current].seeking ? " seeking" : ""}${vids[current] && vids[current].ended ? " ended" : ""}${holding ? " holding" : ""}${hurrying ? " hurrying" : ""}${steer ? " steer" : ""}${cam.leaving ? " leaving" : ""} ready ${Object.keys(vids).filter((name) => ready(name)).length}/${Object.keys(vids).length}
+win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc ${document.documentElement.scrollHeight} fine ${finePointer.matches}`
       paint(now, window.scrollY)
       drawFx(now, dt, dt > 0 ? (cam.c - before) / dt : 0)
       chrome(dt)
@@ -2515,11 +2558,18 @@
     function syncFly() {
       const fly = cam.on && motionOn() && (finePointer.matches || touchTrial)
       if (fly === cam.fly) return
+      // Switching motion off can change the height of sections above (the stack rows wrap).
+      // Not every browser keeps the reader's place through that, so the desk does.
+      const scene = cam.held
+      const off = sc.pos - scene.top
       cam.fly = fly
       root.classList.toggle("desk-scenes", fly)
       geo = null
       camOff()
-      if (!fly) return
+      if (!fly) {
+        if (scene !== scenes[0]) window.scrollTo(0, scene.section.offsetTop + off)
+        return
+      }
       layout(performance.now())
       enter(sceneAtY(window.scrollY))
     }
@@ -2658,7 +2708,14 @@
       if (window.scrollY !== lastY) scrollDir = window.scrollY > lastY ? 1 : -1
       lastY = window.scrollY
       lastScroll = now
-      if (cam.fly && Math.abs(window.scrollY - sc.own) > 1.5) foreign(window.scrollY)
+      if (cam.fly && Math.abs(window.scrollY - sc.set) > 1.5) {
+        // (As the page opens, the browser's own placement always counts.)
+        if (settledScroll(now) || (!cam.aligned && !touched)) {
+          dbg.foreign++
+          dbg.last = `${Math.round(window.scrollY)}/${Math.round(sc.set)}`
+          foreign(window.scrollY)
+        } else dbg.ignored++
+      }
     }, { passive: true })
     window.addEventListener("wheel", onWheel, { passive: false })
     window.addEventListener("keydown", onKey)
