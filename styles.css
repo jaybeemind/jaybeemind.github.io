@@ -316,8 +316,13 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
 .talk-link:hover span {transform:translate(2px,-2px);}
 .talk-shot-link {display:block;border-radius:14px;overflow:hidden;border:1px solid var(--color-border-strong);box-shadow:0 40px 80px -30px rgba(0,0,0,.8);transition:box-shadow .4s;}
 .talk-shot-link:hover {box-shadow:0 40px 80px -30px rgba(0,0,0,.8),0 0 0 2px var(--sec);}
-.talk-gallery {margin-top:56px;columns:3 230px;column-gap:18px;}
-.talk-pic {break-inside:avoid;margin-bottom:18px;}
+/* The photos sit on a fixed grid: four wide ones two by two, and the tall one down the last
+   column, cropped to their height. (Balanced columns placed them differently in Safari:
+   three in the first column and one left alone in the second.) */
+.talk-gallery {margin:56px 0 18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;}
+.talk-pic-tall {grid-column:3;grid-row:1 / span 2;position:relative;}
+.talk-pic-tall a {position:absolute;inset:0;}
+.talk-pic-tall img {width:100%;height:100%;object-fit:cover;}
 .talk-pic a {display:block;border-radius:12px;overflow:hidden;border:1px solid var(--color-border);filter:saturate(.85) brightness(.92);transition:filter .4s,border-color var(--transition),transform .4s var(--ease-out);}
 .talk-pic a:hover,.talk-pic a:focus-visible {filter:none;border-color:var(--sec);transform:translateY(-3px);}
 .talk-note {margin-top:4px;font-family:var(--font-mono);font-size:.75rem;color:var(--color-text-muted);}
@@ -1185,8 +1190,8 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
  .case-stack {gap:20px;}
  .case {position:relative;top:auto;padding:24px;border-radius:18px;transform:none;filter:none;}
  .feature {margin-top:72px;}
- .talk-gallery {margin-top:36px;columns:2 150px;column-gap:12px;}
- .talk-pic {margin-bottom:12px;}
+ .talk-gallery {margin:36px 0 12px;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+ .talk-pic-tall {grid-column:2;}
  .timeline {padding-left:32px;}
  .timeline::before,.timeline::after {left:5px;}
  .timeline-item {grid-template-columns:1fr;padding-bottom:36px;}

@@ -1721,7 +1721,7 @@
     }
     // The page's own scroll. Inside a section the wheel moves `goal` and the page eases after
     // it; it never leaves the section on the glass until the glass is empty.
-    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, set: window.scrollY, at: 0, check: 0, tries: 0, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
+    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, set: window.scrollY, at: 0, ticks: 99, check: 0, tries: 0, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
     const hudEl = qs("#scene-hud")
     const captionEl = qs("#scene-caption")
     const nextEl = qs("#scene-next-label")
@@ -1829,14 +1829,16 @@
       window.scrollTo(0, y)
       sc.set = y
       sc.at = performance.now()
+      sc.ticks = 0
       sc.tries = again ? sc.tries + 1 : 0
       sc.check = sc.tries < 4 ? sc.at + 250 : 0
     }
 
     // A scroll report counts as the reader's own only once the desk has been quiet for a
-    // moment and no finger is on, or has just left, the glass.
+    // moment (in time and in frames, so a stalled page does not use the moment up) and no
+    // finger is on, or has just left, the glass.
     function settledScroll(now) {
-      return now - sc.at > 350 && finger.id === null && now - finger.up > 700
+      return now - sc.at > 350 && sc.ticks > 6 && finger.id === null && now - finger.up > 700
     }
 
     // How far a clip at station A has eased off the rest frame: 0 at its ends, 1 in between.
@@ -2009,7 +2011,6 @@
     // spring. A swipe that reaches the section's end stops there; one that starts at the end
     // and pulls past it asks for the next section. Mid-flight a swipe hurries the camera, or
     // the other way sends it back, as the wheel does.
-    const touchTrial = /[?&]touch=/.test(location.search)
     // ?touch=debug shows what the desk sees, for a device that cannot be inspected.
     const dbg = { ignored: 0, foreign: 0, resent: 0, moves: 0, blocked: 0, last: "" }
     let dbgEl = null
@@ -2147,6 +2148,7 @@
       window.requestAnimationFrame(camTick)
       if (document.hidden) return
       syncFly()
+      sc.ticks++
       if (now - cam.lay > 400) layout(now)
       // Frames can be far apart (a slow device, a throttled tab): the camera then takes the
       // bigger step, so the flight still lasts as long as it should.
@@ -2551,12 +2553,10 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
       }
     }
 
-    // The camera flies only with motion on, and for now only with a mouse or trackpad: on a
-    // real iPad the touch version misbehaved, so it is behind ?touch=1 until it is fixed.
-    // Switching it on
+    // The camera flies only with motion on. Switching it on
     // puts the reader inside the section they were reading, with no flight.
     function syncFly() {
-      const fly = cam.on && motionOn() && (finePointer.matches || touchTrial)
+      const fly = cam.on && motionOn()
       if (fly === cam.fly) return
       // Switching motion off can change the height of sections above (the stack rows wrap).
       // Not every browser keeps the reader's place through that, so the desk does.
