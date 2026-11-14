@@ -2046,10 +2046,7 @@
     // ?touch=debug shows what the desk sees, for a device that cannot be inspected.
     const dbg = { ignored: 0, foreign: 0, resent: 0, moves: 0, blocked: 0, last: "" }
     let dbgEl = null
-    // ?touch=native tries the browser's own scrolling inside a section (see solo), with the
-    // readout, until it is confirmed on a real iPad.
-    const nativeTrial = /[?&]touch=native/.test(location.search)
-    if (/[?&]touch=(debug|native)/.test(location.search)) {
+    if (/[?&]touch=debug/.test(location.search)) {
       dbgEl = document.createElement("pre")
       dbgEl.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:2000;margin:0;padding:6px 8px;font:11px/1.35 monospace;color:#9ff;background:rgba(0,0,0,.8);pointer-events:none;white-space:pre-wrap;max-width:96vw"
       document.body.appendChild(dbgEl)
@@ -2633,10 +2630,10 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
 
     // The camera flies only with motion on. Switching it on puts the reader inside the
     // section they were reading, with no flight. On a touch screen the browser scrolls the
-    // section itself (see solo); for now only with ?touch=native.
+    // section itself (see solo).
     function syncFly() {
       const fly = cam.on && motionOn()
-      const alone = fly && nativeTrial && !finePointer.matches
+      const alone = fly && !finePointer.matches
       if (fly === cam.fly && alone === cam.solo) return
       // Switching changes what is in the page (and motion off can change the height of the
       // sections above, where the stack rows wrap). The desk keeps the reader's place.
