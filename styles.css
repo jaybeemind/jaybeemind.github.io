@@ -1544,6 +1544,10 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
  .desk-scenes {overflow-anchor:none;overscroll-behavior:none;touch-action:pinch-zoom;scroll-behavior:auto;}
  .desk-scenes main > .section:not(.hero) {opacity:0;pointer-events:none;}
  .desk-scenes main > .section.is-inside {pointer-events:auto;}
+ /* Touch screens (html.desk-solo): only the section on the glass is in the page, so the
+    browser can scroll it natively and cannot scroll past its ends. */
+ .desk-solo {touch-action:pan-y pinch-zoom;}
+ .desk-solo main > .section:not(.is-solo),.desk-solo:not(.solo-end) .footer {display:none;}
  /* The footer belongs to the last section's screen: it shows only from inside. */
  .desk-scenes .footer {opacity:0;transition:opacity .25s linear;}
  .desk-scenes.cam-inside .footer {opacity:1;}
@@ -1558,7 +1562,7 @@ html:not(.js) .marquee-list {flex-wrap:wrap;flex-shrink:1;width:100%;animation:n
  .desk-wide .hero-visual {align-self:center;}
  .desk-wide .hero-stats,.desk-wide .logo-strip {width:min(60%,980px);margin-left:auto;}
 }
-@media print {.desk-dive main > .section {opacity:1!important;transform:none!important;clip-path:none!important;min-height:0!important;}.scene-hud {display:none!important;}}
+@media print {.desk-solo main > .section,.desk-solo .footer {display:block!important;}.desk-dive main > .section {opacity:1!important;transform:none!important;clip-path:none!important;min-height:0!important;}.scene-hud {display:none!important;}}
 
 /* Narrow screens: the stage stays behind the content, cropped to JB, under one even scrim. */
 @media (max-width:1099px) {

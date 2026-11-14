@@ -89,9 +89,11 @@
   }
 
   function setActiveLink() {
-    let currentId = ""
+    // While the desk camera flies it says which section the reader asked for (data-at):
+    // positions in the page do not tell, since the page waits for the camera.
+    let currentId = document.documentElement.dataset.at || ""
 
-    sections.forEach((section) => {
+    if (!currentId) sections.forEach((section) => {
       const top = pageTop(section) - window.scrollY
       // Consider section "active" if its top is within the upper portion of viewport
       if (top <= window.innerHeight * 0.35) {
@@ -886,6 +888,7 @@
   const flowSvg = qs("#flow-svg")
   const orbitalScene = qs(".orbital-scene")
   let desk = null
+  let onDeskJump = null // set once the scroll-linked effects exist: the desk moved the page
 
   function applyMotion(on, save) {
     root.classList.toggle("motion-off", !on)
@@ -1693,6 +1696,7 @@
       fly: false, // ...and the camera flies between them (motion on)
       running: false,
       aligned: false,
+      solo: false, // touch: only the section on the glass is in the page, and the browser scrolls it
       rest: true, // landed: in the room with the intro, or inside the section being read
       leaving: false, // pulling out toward a turn
       p: 0, // how far through the dive, on the clock
@@ -1721,7 +1725,7 @@
     }
     // The page's own scroll. Inside a section the wheel moves `goal` and the page eases after
     // it; it never leaves the section on the glass until the glass is empty.
-    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, set: window.scrollY, at: 0, ticks: 99, check: 0, tries: 0, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
+    const sc = { pos: window.scrollY, goal: window.scrollY, vel: 0, drive: false, set: window.scrollY, at: 0, ticks: 99, check: 0, tries: 0, edge: 0, push: 0, pushDir: 0, pushAt: 0, back: 0 }
     const hudEl = qs("#scene-hud")
     const captionEl = qs("#scene-caption")
     const nextEl = qs("#scene-next-label")
@@ -1806,7 +1810,7 @@
       })
       // Something above the reader changed height (a late image, a resize): keep their place.
       const moved = cam.held.top - was
-      if (cam.fly && Math.abs(moved) > 0.5) {
+      if (cam.fly && !cam.solo && Math.abs(moved) > 0.5) {
         sc.pos += moved
         sc.goal += moved
         scrollNow(sc.pos)
@@ -1879,16 +1883,33 @@
     // Move the page to a section. Called only with nothing on the glass, so it is not seen.
     function hold(scene) {
       cam.held = scene
+      if (cam.solo) solo(scene)
       sc.pos = sc.goal = entryY(scene)
       sc.vel = 0
+      sc.drive = false
       scrollNow(sc.pos)
+      if (onDeskJump) onDeskJump()
+    }
+
+    // A finger scrolls smoothly only when the browser does the scrolling (most of all for
+    // things that stick, like the stacked case studies). So on touch screens only the section
+    // on the glass is in the page at all: its top and its end are then the page's own, the
+    // browser scrolls it natively and cannot go past them, and the desk only has to deal
+    // with a swipe at an end and with the flights.
+    function solo(scene) {
+      scenes.forEach((item) => item.section.classList.toggle("is-solo", item === scene))
+      root.classList.add("desk-solo")
+      root.classList.toggle("solo-end", scene === scenes[scenes.length - 1])
+      layout(performance.now())
     }
 
     // Be at a section at once, with no flight: the page opened part way down, a deep link,
     // or motion switched on.
-    function enter(scene) {
+    function enter(scene, top) {
       if (cam.shown) show(null)
       const intro = scene === scenes[0]
+      // Where the reader is within the section, before anything about the page changes.
+      const off = top ? 0 : window.scrollY - scene.top
       cam.dest = cam.from = cam.home = cam.held = scene
       cam.rest = true
       cam.leaving = false
@@ -1903,13 +1924,18 @@
         setStation(target)
         if (live) advance()
       }
+      if (cam.solo) solo(scene)
       if (!intro) show(scene)
-      sc.pos = sc.goal = clamp(window.scrollY, scene.lo, scene.hi)
+      sc.pos = sc.goal = clamp(scene.lo + off, scene.lo, scene.hi)
       sc.vel = 0
+      sc.drive = false
       sc.push = sc.back = 0
       scrollNow(sc.pos)
       active = scene
       hudScene.textContent = scene.label
+      root.dataset.at = scene.section.id
+      setActiveLink()
+      if (onDeskJump) onDeskJump()
     }
 
     // Ask the camera to go to a section. False when it is not flying, so the caller scrolls
@@ -1919,7 +1945,10 @@
       if (scene === cam.dest) {
         // Already there, or on the way: a link to the section being read goes to its top.
         cam.entry = entry === undefined ? "top" : entry
-        if (cam.rest) sc.goal = entryY(scene)
+        if (cam.rest) {
+          sc.goal = entryY(scene)
+          sc.drive = true
+        }
         return true
       }
       cam.from = cam.dest
@@ -1930,6 +1959,8 @@
       sc.push = sc.back = 0
       active = scene
       hudScene.textContent = scene.label
+      root.dataset.at = scene.section.id
+      setActiveLink()
       return true
     }
 
@@ -1974,6 +2005,7 @@
         // it directly. A wheel notch is one big move, and the spring spreads it out.
         if (!key && Math.abs(dy) < 30) sc.pos += to - sc.goal
         sc.goal = to
+        sc.drive = true
         sc.push = 0
         if (sc.goal === edge) sc.edge = now
         return
@@ -2014,12 +2046,15 @@
     // ?touch=debug shows what the desk sees, for a device that cannot be inspected.
     const dbg = { ignored: 0, foreign: 0, resent: 0, moves: 0, blocked: 0, last: "" }
     let dbgEl = null
-    if (/[?&]touch=debug/.test(location.search)) {
+    // ?touch=native tries the browser's own scrolling inside a section (see solo), with the
+    // readout, until it is confirmed on a real iPad.
+    const nativeTrial = /[?&]touch=native/.test(location.search)
+    if (/[?&]touch=(debug|native)/.test(location.search)) {
       dbgEl = document.createElement("pre")
       dbgEl.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:2000;margin:0;padding:6px 8px;font:11px/1.35 monospace;color:#9ff;background:rgba(0,0,0,.8);pointer-events:none;white-space:pre-wrap;max-width:96vw"
       document.body.appendChild(dbgEl)
     }
-    const finger = { id: null, y: 0, at: 0, up: -1e9, v: 0, total: 0, over: 0, ends: 0, own: false }
+    const finger = { id: null, y: 0, at: 0, up: -1e9, v: 0, total: 0, over: 0, ends: 0, own: false, decided: false, pull: false }
 
     function onTouchStart(event) {
       finger.id = null
@@ -2032,10 +2067,13 @@
       finger.v = finger.total = finger.over = 0
       // Something that scrolls or reads drags on its own keeps the finger.
       finger.own = !!qs("dialog[open]") || (!!el && (nested(el, 1) || nested(el, -1) || !!el.closest("input,textarea,select,[contenteditable]")))
-      finger.ends = cam.rest ? (sc.goal >= cam.home.hi - 0.5 ? 1 : 0) + (sc.goal <= cam.home.lo + 0.5 ? 2 : 0) : 0
+      finger.decided = finger.pull = false
+      const y = cam.solo ? window.scrollY : sc.goal
+      finger.ends = cam.rest ? (y >= cam.home.hi - 1 ? 1 : 0) + (y <= cam.home.lo + 1 ? 2 : 0) : 0
       if (cam.rest && !finger.own) {
         sc.goal = sc.pos // a finger on the page stops it where it is
         sc.vel = 0
+        sc.drive = false
       }
     }
 
@@ -2048,6 +2086,26 @@
       const t = event.touches[0]
       if (t.identifier !== finger.id || finger.own) return
       dbg.moves++
+      if (cam.solo && cam.rest) {
+        // Inside a section the browser scrolls. The first move decides whose gesture this
+        // is: only one that starts at an end of the section and pulls past it is the desk's
+        // (and is kept from the browser, so nothing bounces or reloads).
+        const dy = finger.y - t.clientY
+        if (!finger.decided && dy) {
+          finger.decided = true
+          finger.pull = !!(dy > 0 ? finger.ends & 1 : finger.ends & 2)
+        }
+        finger.y = t.clientY
+        finger.at = lastScroll = performance.now()
+        finger.total += dy
+        if (!finger.pull) return
+        if (event.cancelable) {
+          event.preventDefault()
+          dbg.blocked++
+        }
+        finger.over += dy
+        return
+      }
       if (event.cancelable) {
         event.preventDefault() // the desk moves the page, not the browser
         dbg.blocked++
@@ -2086,6 +2144,7 @@
         go(next, sign > 0 ? "top" : "bottom")
         return
       }
+      if (cam.solo) return // the browser carries a flick on by itself
       // A flick: the page keeps the finger's speed and the spring brings it to rest.
       const v = now - finger.at > 90 ? 0 : finger.v
       if (Math.abs(v) < 120) return
@@ -2121,6 +2180,7 @@
     // the section on the glass it is the reader's to make. Anywhere else it is a request to
     // go there, and the page stays put until the camera has come out.
     function foreign(y) {
+      if (cam.solo) return // only the section on the glass is in the page: every scroll is inside it
       if (!cam.aligned && !touched) return enter(sceneAtY(y)) // the browser placing the page as it opens
       const held = cam.held
       const within = y >= held.lo - 1 && y <= held.hi + 1
@@ -2160,7 +2220,7 @@
         cam.aligned = true
         if (!touched) {
           layout(now)
-          enter(sceneAtY(window.scrollY))
+          enter(cam.solo ? cam.dest : sceneAtY(window.scrollY))
         }
       }
       const intro = scenes[0]
@@ -2207,6 +2267,20 @@
       const arrived = want ? cam.shown === want && cam.p >= 1 : back && cam.held === intro
       if (arrived && !cam.rest) land(now)
 
+      if (cam.solo && cam.rest && !sc.drive) {
+        // Touch: the browser scrolls the section itself, and the desk only reads where it is.
+        sc.pos = sc.goal = sc.set = window.scrollY
+        sc.vel = 0
+        sc.check = 0
+      } else moveScroll(now, dt)
+      if (dbgEl) showDebug()
+      paint(now, window.scrollY)
+      drawFx(now, dt, dt > 0 ? (cam.c - before) / dt : 0)
+      chrome(dt)
+      hud()
+    }
+
+    function moveScroll(now, dt) {
       // The page follows the wheel like a damped spring: it sets off gently, never
       // overshoots, and a long stride lands as softly as a short one.
       const gap = sc.pos - sc.goal
@@ -2230,14 +2304,14 @@
           dbg.resent++
         }
       }
-      if (dbgEl) dbgEl.textContent = `y ${Math.round(window.scrollY)} pos ${Math.round(sc.pos)} goal ${Math.round(sc.goal)} | to ${cam.dest.section.id} on ${cam.shown ? cam.shown.section.id : "-"} p ${cam.p.toFixed(2)} ${cam.rest ? "rest" : "fly"} | st ${station}${moving ? " turning" : ""}${live ? "" : " stills"}
+      if (sc.drive && sc.pos === sc.goal && !sc.vel) sc.drive = false // arrived: the reader's again
+    }
+
+    function showDebug() {
+      dbgEl.textContent = `${cam.solo ? "native " : ""}y ${Math.round(window.scrollY)} pos ${Math.round(sc.pos)} goal ${Math.round(sc.goal)} | to ${cam.dest.section.id} on ${cam.shown ? cam.shown.section.id : "-"} p ${cam.p.toFixed(2)} ${cam.rest ? "rest" : "fly"} | st ${station}${moving ? " turning" : ""}${live ? "" : " stills"}
 ignored ${dbg.ignored} foreign ${dbg.foreign} ${dbg.last} resent ${dbg.resent} | finger ${finger.id === null ? "up" : "down"} own ${finger.own} over ${Math.round(finger.over)} v ${Math.round(finger.v)} moves ${dbg.moves} blocked ${dbg.blocked}
 clip ${current || "-"} t ${vids[current] ? vids[current].currentTime.toFixed(2) : "-"}${vids[current] && vids[current].paused ? " paused" : ""}${vids[current] && vids[current].seeking ? " seeking" : ""}${vids[current] && vids[current].ended ? " ended" : ""}${holding ? " holding" : ""}${hurrying ? " hurrying" : ""}${steer ? " steer" : ""}${cam.leaving ? " leaving" : ""} ready ${Object.keys(vids).filter((name) => ready(name)).length}/${Object.keys(vids).length}
 win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc ${document.documentElement.scrollHeight} fine ${finePointer.matches}`
-      paint(now, window.scrollY)
-      drawFx(now, dt, dt > 0 ? (cam.c - before) / dt : 0)
-      chrome(dt)
-      hud()
     }
 
     function paint(now, y) {
@@ -2540,7 +2614,11 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
       cam.last = {}
       frameEl.style.transform = ""
       scenes[0].section.style.opacity = ""
-      root.classList.remove("cam-inside")
+      root.classList.remove("cam-inside", "desk-solo", "solo-end")
+      scenes.forEach((scene) => scene.section.classList.remove("is-solo"))
+      cam.solo = false
+      sc.drive = false
+      delete root.dataset.at
       ;["--dive", "--glass", "--bezel", "--tag"].forEach((name) => stage.style.removeProperty(name))
       if (hudEl) {
         ;["--bars", "--in"].forEach((name) => hudEl.style.removeProperty(name))
@@ -2553,25 +2631,31 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
       }
     }
 
-    // The camera flies only with motion on. Switching it on
-    // puts the reader inside the section they were reading, with no flight.
+    // The camera flies only with motion on. Switching it on puts the reader inside the
+    // section they were reading, with no flight. On a touch screen the browser scrolls the
+    // section itself (see solo); for now only with ?touch=native.
     function syncFly() {
       const fly = cam.on && motionOn()
-      if (fly === cam.fly) return
-      // Switching motion off can change the height of sections above (the stack rows wrap).
-      // Not every browser keeps the reader's place through that, so the desk does.
+      const alone = fly && nativeTrial && !finePointer.matches
+      if (fly === cam.fly && alone === cam.solo) return
+      // Switching changes what is in the page (and motion off can change the height of the
+      // sections above, where the stack rows wrap). The desk keeps the reader's place.
+      const was = cam.fly
       const scene = cam.held
       const off = sc.pos - scene.top
       cam.fly = fly
       root.classList.toggle("desk-scenes", fly)
       geo = null
       camOff()
-      if (!fly) {
-        if (scene !== scenes[0]) window.scrollTo(0, scene.section.offsetTop + off)
-        return
-      }
+      if (was && scene !== scenes[0]) window.scrollTo(0, scene.section.offsetTop + off)
+      setActiveLink()
+      if (!fly) return
+      cam.solo = alone
       layout(performance.now())
-      enter(sceneAtY(window.scrollY))
+      // A link to a section opens inside it.
+      const linked = !cam.aligned && !touched && location.hash.length > 1 && scenes.find((item, i) => i && `#${item.section.id}` === location.hash)
+      if (linked) enter(linked, true)
+      else enter(sceneAtY(window.scrollY))
     }
 
     // The section markers at the right edge: one tick each, and a click goes there.
@@ -2708,7 +2792,7 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
       if (window.scrollY !== lastY) scrollDir = window.scrollY > lastY ? 1 : -1
       lastY = window.scrollY
       lastScroll = now
-      if (cam.fly && Math.abs(window.scrollY - sc.set) > 1.5) {
+      if (cam.fly && !cam.solo && Math.abs(window.scrollY - sc.set) > 1.5) {
         // (As the page opens, the browser's own placement always counts.)
         if (settledScroll(now) || (!cam.aligned && !touched)) {
           dbg.foreign++
@@ -2888,7 +2972,7 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
 
     if (progressBar) progressBar.style.setProperty("--progress", maxScroll > 0 ? (window.scrollY / maxScroll).toFixed(4) : 0)
 
-    if (hero) hero.style.setProperty("--hero-p", animate ? clamp(window.scrollY / hero.offsetHeight, 0, 1).toFixed(3) : 0)
+    if (hero) hero.style.setProperty("--hero-p", animate && hero.offsetHeight ? clamp(window.scrollY / hero.offsetHeight, 0, 1).toFixed(3) : 0)
 
     // Stacked case studies: as the next card slides over, the one beneath settles back.
     const stacking = animate && stackQuery.matches
@@ -2940,6 +3024,7 @@ win ${window.innerWidth}x${window.innerHeight} stage ${stage.clientHeight} doc $
   window.addEventListener("resize", requestScrollUpdate)
   if (viewTimelineBtn) viewTimelineBtn.addEventListener("click", requestScrollUpdate)
   updateScrollEffects()
+  onDeskJump = requestScrollUpdate
 
   // ---------------------- Motion: marquee rows ----------------------
   // Each row is doubled so the loop is seamless; the copy is hidden from assistive tech.
